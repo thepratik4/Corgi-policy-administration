@@ -108,6 +108,26 @@ function createInitialSeedState(): CorgiDatabaseState {
   };
 }
 
+export const REQUIRED_STATE_ARRAYS: readonly (keyof CorgiDatabaseState)[] = [
+  'users',
+  'policies',
+  'brokers',
+  'payments',
+  'claims',
+  'ledgerTransactions',
+  'reconciliationItems',
+  'approvalRequests',
+  'documents',
+  'webhookEvents',
+  'auditLogs',
+] as const;
+
+export function isValidDatabaseState(obj: unknown): obj is CorgiDatabaseState {
+  if (!obj || typeof obj !== 'object') return false;
+  const candidate = obj as Record<string, unknown>;
+  return REQUIRED_STATE_ARRAYS.every((key) => Array.isArray(candidate[key]));
+}
+
 export function getDbState(): CorgiDatabaseState {
   if (global._corgiDbState) {
     return global._corgiDbState;
@@ -116,8 +136,8 @@ export function getDbState(): CorgiDatabaseState {
   try {
     if (fs.existsSync(DB_FILE)) {
       const raw = fs.readFileSync(DB_FILE, 'utf8');
-      const parsed = JSON.parse(raw) as CorgiDatabaseState;
-      if (parsed && Array.isArray(parsed.policies) && Array.isArray(parsed.ledgerTransactions)) {
+      const parsed = JSON.parse(raw);
+      if (isValidDatabaseState(parsed)) {
         global._corgiDbState = parsed;
         return global._corgiDbState;
       }
@@ -128,11 +148,19 @@ export function getDbState(): CorgiDatabaseState {
 
   const fresh = createInitialSeedState();
   global._corgiDbState = fresh;
-  persistDbState(fresh);
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpFile = `${DB_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(fresh, null, 2), 'utf8');
+    fs.renameSync(tmpFile, DB_FILE);
+  } catch {}
+  void syncStateToSupabase(fresh);
   return fresh;
 }
 
-function persistDbState(state: CorgiDatabaseState): void {
+export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -144,8 +172,8 @@ function persistDbState(state: CorgiDatabaseState): void {
     console.error('Failed to persist Corgi DB file:', err);
   }
 
-  // Asynchronously synchronize snapshot & relational tables with Supabase
-  void syncStateToSupabase(state);
+  // Await cloud synchronization rather than discarding with void
+  await syncStateToSupabase(state);
 }
 
 let _hasHydratedFromCloud = false;
@@ -168,8 +196,8 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
       .eq('key', 'ACTIVE_SNAPSHOT')
       .maybeSingle();
 
-    if (!error && data?.state && Array.isArray((data.state as CorgiDatabaseState).policies)) {
-      const cloudState = data.state as CorgiDatabaseState;
+    if (!error && data?.state && isValidDatabaseState(data.state)) {
+      const cloudState = data.state;
       global._corgiDbState = cloudState;
       _hasHydratedFromCloud = true;
 
@@ -350,13 +378,16 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
  * Executes a database mutation inside an atomic snapshot transaction.
  * If an exception is thrown or validation fails, all changes are rolled back.
  */
-export function runDbTransaction<T>(fn: (state: CorgiDatabaseState) => T): T {
+export async function runDbTransaction<T>(
+  fn: (state: CorgiDatabaseState) => T | Promise<T>
+): Promise<T> {
+  await hydrateStateFromSupabaseIfAvailable();
   const current = getDbState();
   const snapshot = structuredClone(current);
   try {
-    const result = fn(snapshot);
+    const result = await fn(snapshot);
     global._corgiDbState = snapshot;
-    persistDbState(snapshot);
+    await persistDbState(snapshot);
     return result;
   } catch (err) {
     // Atomic rollback: global._corgiDbState remains untouched
@@ -364,10 +395,10 @@ export function runDbTransaction<T>(fn: (state: CorgiDatabaseState) => T): T {
   }
 }
 
-export function resetDatabaseToSeed(): CorgiDatabaseState {
+export async function resetDatabaseToSeed(): Promise<CorgiDatabaseState> {
   const fresh = createInitialSeedState();
   global._corgiDbState = fresh;
-  persistDbState(fresh);
+  await persistDbState(fresh);
   return fresh;
 }
 
@@ -467,7 +498,7 @@ export function postBalancedJournalEntryInState(
  * Reverses an existing posted journal entry and optionally rebooks a corrected entry.
  * Enforces append-only immutability: never deletes or mutates lines on the original entry.
  */
-export function reverseAndRebookJournalInDb(params: {
+export async function reverseAndRebookJournalInDb(params: {
   journalIdOrNumber: string;
   reason: string;
   actor: DemoUser;
@@ -479,11 +510,11 @@ export function reverseAndRebookJournalInDb(params: {
     memo?: string;
   }[];
   rebookDescription?: string;
-}): {
+}): Promise<{
   originalEntry: LedgerTransaction;
   reversalEntry: LedgerTransaction;
   rebookedEntry?: LedgerTransaction;
-} {
+}> {
   return runDbTransaction((state) => {
     const target = state.ledgerTransactions.find(
       (t) => t.id === params.journalIdOrNumber || t.journalNumber === params.journalIdOrNumber
@@ -569,7 +600,7 @@ export function reverseAndRebookJournalInDb(params: {
  * 5. Posts balanced initial receivable/unearned journal entry
  * 6. Records audit log & declaration document
  */
-export function issuePolicyInDb(params: {
+export async function issuePolicyInDb(params: {
   customerName: string;
   customerIndustry: string;
   customerEin: string;
@@ -583,10 +614,10 @@ export function issuePolicyInDb(params: {
   effectiveDate: string;
   expirationDate: string;
   actor: DemoUser;
-}): {
+}): Promise<{
   policy: Policy;
   journalEntry: LedgerTransaction;
-} {
+}> {
   return runDbTransaction((state) => {
     const broker = state.brokers.find((b) => b.id === params.brokerId);
     const brokerCheck = validateBrokerBindingEligibility(broker);
@@ -722,13 +753,13 @@ export function issuePolicyInDb(params: {
 /**
  * Binds an existing Draft or Pending policy after verifying Broker KYB approval.
  */
-export function bindExistingPolicyInDb(params: {
+export async function bindExistingPolicyInDb(params: {
   policyId: string;
   actor: DemoUser;
-}): {
+}): Promise<{
   policy: Policy;
   journalEntry: LedgerTransaction;
-} {
+}> {
   return runDbTransaction((state) => {
     const policy = state.policies.find((p) => p.id === params.policyId);
     if (!policy) {
@@ -791,14 +822,14 @@ export function bindExistingPolicyInDb(params: {
  * CRITICAL INVARIANT: Never marks a payment Succeeded or posts cash journal entries on initiation!
  * Cash journal posting ONLY happens when the signed Stripe webhook (`payment_intent.succeeded`) is verified.
  */
-export function recordPaymentIntentCreatedInDb(params: {
+export async function recordPaymentIntentCreatedInDb(params: {
   policyId: string;
   amountCents: number;
   paymentMethod: string;
   stripePaymentIntentId: string;
   idempotencyKey: string;
   actor: DemoUser;
-}): Payment {
+}): Promise<Payment> {
   return runDbTransaction((state) => {
     const policy = state.policies.find((p) => p.id === params.policyId);
     if (!policy) {
@@ -890,19 +921,19 @@ export function recordPaymentIntentCreatedInDb(params: {
  * - Rejects out-of-order events (`OUT_OF_ORDER_IGNORED`)
  * - Posts balanced double-entry journal entries ONLY when `payment_intent.succeeded` or `charge.refunded` is confirmed.
  */
-export function processVerifiedStripeWebhookInDb(params: {
+export async function processVerifiedStripeWebhookInDb(params: {
   stripeEventId: string;
   eventType: 'payment_intent.created' | 'payment_intent.succeeded' | 'payment_intent.payment_failed' | 'charge.refunded';
   paymentIntentId: string;
   amountCents?: number;
   actor?: Pick<DemoUser, 'name' | 'email' | 'role'>;
-}): {
+}): Promise<{
   outcome: 'APPLY' | 'DUPLICATE_IGNORED' | 'OUT_OF_ORDER_IGNORED';
   webhookRecord: WebhookEventRecord;
   payment: Payment;
   journalEntries: LedgerTransaction[];
   reason: string;
-} {
+}> {
   return runDbTransaction((state) => {
     const payment = state.payments.find(
       (p) => p.stripePaymentIntentId === params.paymentIntentId || p.id === params.paymentIntentId
@@ -1148,11 +1179,11 @@ export function processVerifiedStripeWebhookInDb(params: {
   });
 }
 
-export function updateBrokerKybInDb(params: {
+export async function updateBrokerKybInDb(params: {
   brokerId: string;
   kybStatus: KybStatus;
   actor: DemoUser;
-}): Broker {
+}): Promise<Broker> {
   return runDbTransaction((state) => {
     const broker = state.brokers.find((b) => b.id === params.brokerId);
     if (!broker) {
@@ -1173,13 +1204,13 @@ export function updateBrokerKybInDb(params: {
   });
 }
 
-export function createEndorsementInDb(params: {
+export async function createEndorsementInDb(params: {
   policyId: string;
   effectiveDate: string;
   description: string;
   premiumDeltaDollars: number;
   actor: DemoUser;
-}): { policy: Policy; journalEntry?: LedgerTransaction } {
+}): Promise<{ policy: Policy; journalEntry?: LedgerTransaction }> {
   return runDbTransaction((state) => {
     const policy = state.policies.find((p) => p.id === params.policyId);
     if (!policy) {
@@ -1266,11 +1297,11 @@ export function createEndorsementInDb(params: {
   });
 }
 
-export function cancelPolicyInDb(params: {
+export async function cancelPolicyInDb(params: {
   policyId: string;
   reason: string;
   actor: DemoUser;
-}): Policy {
+}): Promise<Policy> {
   return runDbTransaction((state) => {
     const policy = state.policies.find((p) => p.id === params.policyId);
     if (!policy) {
@@ -1314,14 +1345,14 @@ export function cancelPolicyInDb(params: {
   });
 }
 
-export function fileClaimInDb(params: {
+export async function fileClaimInDb(params: {
   policyId: string;
   lossDate: string;
   description: string;
   claimedAmountDollars: number;
   initialReserveDollars: number;
   actor: DemoUser;
-}): { claim: Claim; journalEntry: LedgerTransaction } {
+}): Promise<{ claim: Claim; journalEntry: LedgerTransaction }> {
   return runDbTransaction((state) => {
     const policy = state.policies.find((p) => p.id === params.policyId);
     if (!policy) {
@@ -1403,12 +1434,12 @@ export function fileClaimInDb(params: {
   });
 }
 
-export function adjustClaimReserveInDb(params: {
+export async function adjustClaimReserveInDb(params: {
   claimId: string;
   newReserveDollars: number;
   reason: string;
   actor: DemoUser;
-}): { claim: Claim; journalEntry: LedgerTransaction } {
+}): Promise<{ claim: Claim; journalEntry: LedgerTransaction }> {
   return runDbTransaction((state) => {
     const claim = state.claims.find((c) => c.id === params.claimId);
     if (!claim) {
@@ -1487,12 +1518,12 @@ export function adjustClaimReserveInDb(params: {
   });
 }
 
-export function decideApprovalInDb(params: {
+export async function decideApprovalInDb(params: {
   requestId: string;
   decision: 'Approved' | 'Rejected';
   note: string;
   actor: DemoUser;
-}): ApprovalRequest {
+}): Promise<ApprovalRequest> {
   return runDbTransaction((state) => {
     const req = state.approvalRequests.find((r) => r.id === params.requestId);
     if (!req) {
@@ -1581,12 +1612,12 @@ export function decideApprovalInDb(params: {
   });
 }
 
-export function updateReconciliationBreakInDb(params: {
+export async function updateReconciliationBreakInDb(params: {
   itemId: string;
   status: InvestigationStatus;
   notes: string;
   actor: DemoUser;
-}): ReconciliationItem {
+}): Promise<ReconciliationItem> {
   return runDbTransaction((state) => {
     const item = state.reconciliationItems.find((r) => r.id === params.itemId);
     if (!item) {

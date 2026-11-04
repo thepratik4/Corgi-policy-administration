@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Record payment in Pending state — never settle payment or post cash on button click!
-    const payment = recordPaymentIntentCreatedInDb({
+    const payment = await recordPaymentIntentCreatedInDb({
       policyId: policy.id,
       amountCents,
       paymentMethod: parsed.data.paymentMethod,

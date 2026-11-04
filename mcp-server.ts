@@ -13,7 +13,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { getDbState, runDbTransaction } from './lib/serverDatabase';
+import { getDbState, hydrateStateFromSupabaseIfAvailable, runDbTransaction } from './lib/serverDatabase';
 import { dollarsToCents, centsToDollars } from './utils/financialRules';
 import { ApprovalRequest } from './types/domain';
 
@@ -34,6 +34,7 @@ server.tool(
     asOfDate: z.string().describe('Historical calendar date in YYYY-MM-DD format (e.g. "2026-05-03")'),
   },
   async ({ policyIdOrNumber, asOfDate }) => {
+    await hydrateStateFromSupabaseIfAvailable();
     const state = getDbState();
     const policy = state.policies.find(
       (p) => p.id === policyIdOrNumber || p.policyNumber === policyIdOrNumber
@@ -192,6 +193,7 @@ server.tool(
     accountCode: z.string().optional().describe('Optional specific account code (e.g. "1010" Cash, "2010" Unearned Premium, "2030" Loss Reserves)'),
   },
   async ({ accountCode }) => {
+    await hydrateStateFromSupabaseIfAvailable();
     const state = getDbState();
     const accountBalances: Record<
       string,
@@ -309,6 +311,7 @@ server.tool(
       .describe('Month in YYYY-MM format (e.g. "2026-11")'),
   },
   async ({ brokerIdOrName, monthIso }) => {
+    await hydrateStateFromSupabaseIfAvailable();
     const state = getDbState();
     const query = typeof brokerIdOrName === 'string' ? brokerIdOrName.trim() : '';
     if (!query) {
@@ -445,7 +448,8 @@ server.tool(
     agentCallerTag: z.string().default('Autonomous-Agent-MCP').describe('Identifier of the invoking AI agent or integration client'),
   },
   async ({ requestType, targetId, amountDollars, effectiveDate, justification, agentCallerTag }) => {
-    return runDbTransaction((state) => {
+    await hydrateStateFromSupabaseIfAvailable();
+    return await runDbTransaction((state) => {
       let actionType: 'Claim Payout Release' | 'Payment Refund' | 'Large Reserve Increase' | 'Policy Cancellation Return Premium' | 'Ledger Reversal & Rebook' = 'Large Reserve Increase';
       let targetRef = '';
       let customer = '';

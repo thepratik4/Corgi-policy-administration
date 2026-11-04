@@ -16,9 +16,10 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    await hydrateStateFromSupabaseIfAvailable();
     const body = await req.json();
     if (body?.action === 'RESET_SEED') {
-      const state = resetDatabaseToSeed();
+      const state = await resetDatabaseToSeed();
       return NextResponse.json({
         reset: true,
         state,

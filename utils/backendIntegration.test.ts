@@ -31,14 +31,14 @@ test('Server JWT signing, verification, and RBAC role enforcement', async () => 
   assert.equal(authorizeRole(finUser, ['FINANCE_APPROVER']).authorized, true);
 });
 
-test('Policy issuance enforces KYB Approved broker and books balanced integer-cent journal', () => {
-  resetDatabaseToSeed();
+test('Policy issuance enforces KYB Approved broker and books balanced integer-cent journal', async () => {
+  await resetDatabaseToSeed();
   const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
 
   // 1. Attempting to issue a policy with Pending KYB broker (brk-03) MUST fail
-  assert.throws(
-    () =>
-      issuePolicyInDb({
+  await assert.rejects(
+    async () =>
+      await issuePolicyInDb({
         customerName: 'Unverified Broker Test Corp',
         customerIndustry: 'Technology',
         customerEin: '94-1112223',
@@ -57,7 +57,7 @@ test('Policy issuance enforces KYB Approved broker and books balanced integer-ce
   );
 
   // 2. Issuing a policy with Approved KYB broker (brk-01) succeeds and calculates 3.5% tax
-  const issued = issuePolicyInDb({
+  const issued = await issuePolicyInDb({
     customerName: 'Apex Precision Robotics Inc.',
     customerIndustry: 'Commercial Manufacturing',
     customerEin: '94-9988776',
@@ -79,12 +79,12 @@ test('Policy issuance enforces KYB Approved broker and books balanced integer-ce
   assert.equal(validateDoubleEntryBalance(issued.journalEntry.lines).isBalanced, true);
 });
 
-test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idempotent on replay, out-of-order safe', () => {
-  resetDatabaseToSeed();
+test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idempotent on replay, out-of-order safe', async () => {
+  await resetDatabaseToSeed();
   const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
 
   // Issue a fresh policy ($28,000 written premium, $0 collected) to test collection
-  const issued = issuePolicyInDb({
+  const issued = await issuePolicyInDb({
     customerName: 'Beacon Maritime Logistics LLC',
     customerIndustry: 'Marine & Cargo',
     customerEin: '94-5544332',
@@ -102,7 +102,7 @@ test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idemp
 
   const journalCountAfterIssue = getDbState().ledgerTransactions.length;
 
-  const payment = recordPaymentIntentCreatedInDb({
+  const payment = await recordPaymentIntentCreatedInDb({
     policyId: issued.policy.id,
     amountCents: 2800000, // $28,000.00
     paymentMethod: 'Visa •••• 4242 (Stripe Test Card)',
@@ -144,7 +144,7 @@ test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idemp
   assert.equal(goodVerify.verified, true);
 
   // Process verified payment_intent.succeeded webhook
-  const firstWebhook = processVerifiedStripeWebhookInDb({
+  const firstWebhook = await processVerifiedStripeWebhookInDb({
     stripeEventId: 'evt_3QTest_Success_1088',
     eventType: 'payment_intent.succeeded',
     paymentIntentId: 'pi_3QTest_Integration_1088',
@@ -157,7 +157,7 @@ test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idemp
   assert.equal(countAfterFirst, journalCountAfterIssue + 2);
 
   // Replay exact same webhook event ID -> MUST be DUPLICATE_IGNORED with ZERO new journal entries
-  const replayWebhook = processVerifiedStripeWebhookInDb({
+  const replayWebhook = await processVerifiedStripeWebhookInDb({
     stripeEventId: 'evt_3QTest_Success_1088',
     eventType: 'payment_intent.succeeded',
     paymentIntentId: 'pi_3QTest_Integration_1088',
@@ -168,7 +168,7 @@ test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idemp
   assert.equal(getDbState().ledgerTransactions.length, countAfterFirst);
 
   // Out-of-order payment_intent.created arriving AFTER Succeeded -> MUST be OUT_OF_ORDER_IGNORED
-  const lateCreated = processVerifiedStripeWebhookInDb({
+  const lateCreated = await processVerifiedStripeWebhookInDb({
     stripeEventId: 'evt_3QTest_LateCreated_1088',
     eventType: 'payment_intent.created',
     paymentIntentId: 'pi_3QTest_Integration_1088',
@@ -178,12 +178,12 @@ test('Stripe PaymentIntent + Verified Webhook Lifecycle: no cash on click, idemp
   assert.equal(lateCreated.payment.status, 'Succeeded');
 });
 
-test('Append-Only Ledger Reversal & Rebooking preserves original entry and posts mirror reversal', () => {
-  const state = resetDatabaseToSeed();
+test('Append-Only Ledger Reversal & Rebooking preserves original entry and posts mirror reversal', async () => {
+  const state = await resetDatabaseToSeed();
   const finUser = DEMO_USERS.FINANCE_APPROVER;
   const targetJournal = state.ledgerTransactions[0];
 
-  const rev = reverseAndRebookJournalInDb({
+  const rev = await reverseAndRebookJournalInDb({
     journalIdOrNumber: targetJournal.journalNumber,
     reason: 'Correcting subledger account classification',
     actor: finUser,
@@ -195,9 +195,9 @@ test('Append-Only Ledger Reversal & Rebooking preserves original entry and posts
   assert.equal(validateDoubleEntryBalance(rev.reversalEntry.lines).isBalanced, true);
 
   // Attempting to reverse an already-reversed entry MUST fail
-  assert.throws(
-    () =>
-      reverseAndRebookJournalInDb({
+  await assert.rejects(
+    async () =>
+      await reverseAndRebookJournalInDb({
         journalIdOrNumber: targetJournal.journalNumber,
         reason: 'Duplicate reversal attempt',
         actor: finUser,
