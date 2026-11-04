@@ -1,24 +1,5 @@
 import type {Metadata} from 'next';
-import {Plus_Jakarta_Sans, Public_Sans, JetBrains_Mono} from 'next/font/google';
 import './globals.css';
-
-const plusJakarta = Plus_Jakarta_Sans({
-  subsets: ['latin'],
-  weight: ['500', '600', '700'],
-  variable: '--font-display',
-});
-
-const publicSans = Public_Sans({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-sans',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-mono',
-});
 
 export const metadata: Metadata = {
   title: 'Corgi — Commercial Policy Administration',
@@ -37,8 +18,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
-    <html lang="en" className={`${plusJakarta.variable} ${publicSans.variable} ${jetbrainsMono.variable}`}>
-      <body suppressHydrationWarning className="bg-[#F8FAFC] text-[#0F172A] antialiased font-sans selection:bg-orange-500/15 selection:text-orange-900">
+    <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700&family=Public+Sans:wght@400;500;600&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body suppressHydrationWarning className="bg-[#F8FAFC] text-[#0F172A] antialiased selection:bg-orange-500/15 selection:text-orange-900">
         {children}
       </body>
     </html>
