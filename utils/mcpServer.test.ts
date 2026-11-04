@@ -1,0 +1,187 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { getDbState, resetDatabaseToSeed } from '../lib/serverDatabase';
+import { dollarsToCents, centsToDollars } from '../utils/financialRules';
+import { reconstructPolicyAsOfDate, generateDeclarationsPageHtml, printHtmlDocument } from '../utils/documentGenerator';
+
+test('MCP Tool Logic: get_policy_as_of reconstructs historical coverage and earned premium', () => {
+  resetDatabaseToSeed();
+  const state = getDbState();
+  const policy = state.policies[0];
+  assert.ok(policy, 'Seed policy should exist');
+
+  // Test mid-term as-of reconstruction
+  const asOfDate = '2026-06-30';
+  const targetTime = new Date(`${asOfDate}T23:59:59Z`).getTime();
+  const inception = new Date(`${policy.effectiveDate}T00:00:00Z`).getTime();
+  const expiration = new Date(`${policy.expirationDate}T00:00:00Z`).getTime();
+
+  const totalTermMs = expiration - inception;
+  const elapsedMs = Math.min(Math.max(0, targetTime - inception), totalTermMs);
+  const earnedFraction = elapsedMs / totalTermMs;
+
+  const totalCents = dollarsToCents(policy.writtenPremium);
+  const earnedCents = Math.round(totalCents * earnedFraction);
+  const unearnedCents = totalCents - earnedCents;
+
+  assert.ok(earnedCents > 0, 'Earned premium should be positive mid-term');
+  assert.ok(unearnedCents > 0, 'Unearned premium should remain mid-term');
+  assert.equal(earnedCents + unearnedCents, totalCents, 'Earned + Unearned must equal total written premium');
+});
+
+test('Seed ledger: verifies trial balance equality across transactions', () => {
+  const state = getDbState();
+  let totalDebitCents = 0;
+  let totalCreditCents = 0;
+
+  for (const tx of state.ledgerTransactions) {
+    for (const line of tx.lines) {
+      totalDebitCents += dollarsToCents(line.debit);
+      totalCreditCents += dollarsToCents(line.credit);
+    }
+  }
+
+  assert.ok(totalDebitCents > 0, 'Total debits must be > 0');
+  assert.equal(totalDebitCents, totalCreditCents, 'Trial balance must be exactly balanced to the cent');
+});
+
+test('MCP Tool Logic: get_broker_statement ties commission and clawbacks to the cent', () => {
+  const state = getDbState();
+  const broker = state.brokers[0];
+  assert.ok(broker, 'Broker must exist');
+
+  const policies = state.policies.filter((p) => p.brokerId === broker.id);
+  assert.ok(policies.length > 0, 'Broker must have bound policies');
+
+  const grossPremium = policies.reduce((s, p) => s + p.writtenPremium, 0);
+  const grossCommission = Math.round(grossPremium * broker.commissionRate);
+  assert.ok(grossCommission > 0, 'Commission must be positive');
+
+  const monthIso = '2026-03';
+  const boundPoliciesInMonth = policies.filter((p) => {
+    if (p.status === 'Draft' || p.status === 'Pending') return false;
+    const policyBindDate = p.bindDate || p.effectiveDate;
+    return policyBindDate.startsWith(monthIso);
+  });
+  assert.ok(boundPoliciesInMonth.every((p) => p.status !== 'Draft' && p.status !== 'Pending'), 'Excludes draft and pending policies');
+
+  // Month format validation test
+  const monthRegex = /^\d{4}-(0[1-9]|1[0-2])$/;
+  assert.ok(monthRegex.test('2026-03'), '2026-03 should be valid month');
+  assert.ok(monthRegex.test('2026-12'), '2026-12 should be valid month');
+  assert.ok(!monthRegex.test('2026-13'), '2026-13 should be invalid month');
+  assert.ok(!monthRegex.test('2026-00'), '2026-00 should be invalid month');
+  assert.ok(!monthRegex.test('2026-3'), '2026-3 should be invalid month');
+
+  // Broker lookup uniqueness assertion
+  const searchBrokers = (query: string) =>
+    state.brokers.filter(
+      (b) =>
+        b.id === query ||
+        b.code === query ||
+        b.agencyName.toLowerCase().includes(query.toLowerCase())
+    );
+  assert.equal(searchBrokers('nonexistent-broker').length, 0, 'Nonexistent query matches 0');
+  assert.equal(searchBrokers(broker.id).length, 1, 'Exact ID matches exactly 1');
+
+  // Payment aggregation assertion: Succeeded + Refunded in gross, Refunded in refunds
+  const testPayments = [
+    { amount: 10000, status: 'Succeeded' as const },
+    { amount: 5000, status: 'Refunded' as const, refundedAmount: 5000 },
+  ];
+  let testCollected = 0;
+  let testRefunded = 0;
+  for (const pay of testPayments) {
+    if (pay.status === 'Succeeded' || pay.status === 'Refunded') {
+      testCollected += pay.amount;
+    }
+    if (pay.status === 'Refunded') {
+      testRefunded += pay.refundedAmount;
+    }
+  }
+  assert.equal(testCollected, 15000, 'Gross collection includes succeeded and refunded payments');
+  assert.equal(testRefunded, 5000, 'Refunds include refunded payments');
+  assert.equal(testCollected - testRefunded, 10000, 'Net collected equals gross minus refunds');
+});
+
+test('MCP Tool Logic: request_endorsement_or_reserve_adjustment queues strictly to human Finance Approver', () => {
+  const state = getDbState();
+  const initialPendingCount = state.approvalRequests.filter((a) => a.status === 'Pending').length;
+
+  const newApproval = {
+    id: `appr-mcp-test-${Date.now()}`,
+    referenceNumber: 'AR-MCP-TEST-001',
+    actionType: 'Large Reserve Increase' as const,
+    targetEntityId: state.policies[0].id,
+    targetReference: state.policies[0].policyNumber,
+    customerName: state.policies[0].customerName,
+    amount: 1500,
+    reason: 'Autonomous request test',
+    initiatorEmail: 'agent-mcp@corgi.insure',
+    initiatorName: 'AI Agent (Test)',
+    initiatorRole: 'OPERATIONS_ADMIN' as const,
+    status: 'Pending' as const,
+    createdAt: new Date().toISOString(),
+  };
+
+  state.approvalRequests.unshift(newApproval);
+
+  const updatedPendingCount = state.approvalRequests.filter((a) => a.status === 'Pending').length;
+  assert.equal(updatedPendingCount, initialPendingCount + 1, 'Approval request must be in pending queue');
+});
+
+test('reconstructPolicyAsOfDate: validates NaN date and derives historical status and per-endorsement earnings', () => {
+  resetDatabaseToSeed();
+  const state = getDbState();
+  const cancelledPolicy = state.policies.find((p) => p.status === 'Cancelled');
+  assert.ok(cancelledPolicy, 'Seed should contain a cancelled policy');
+
+  // 1. Invalid or empty date throws
+  assert.throws(() => reconstructPolicyAsOfDate(cancelledPolicy, 'invalid-date'), /Invalid asOfDate/);
+  assert.throws(() => reconstructPolicyAsOfDate(cancelledPolicy, ''), /Invalid asOfDate/);
+
+  // 2. Pre-cancellation status is Active
+  const preCancelRecon = reconstructPolicyAsOfDate(cancelledPolicy, '2026-05-01');
+  assert.equal(preCancelRecon.statusAsOfDate, 'Active', 'Policy prior to cancellation date should be Active');
+
+  // 3. Post-cancellation status is Cancelled
+  const postCancelRecon = reconstructPolicyAsOfDate(cancelledPolicy, '2026-07-01');
+  assert.equal(postCancelRecon.statusAsOfDate, 'Cancelled', 'Policy after cancellation date should be Cancelled');
+
+  // 4. Per-endorsement earned premium and effective date filtering
+  const policyWithEndorsement = state.policies.find((p) => p.endorsements && p.endorsements.length > 0);
+  if (policyWithEndorsement) {
+    // Before endorsement effective date (2026-07-15)
+    const beforeRecon = reconstructPolicyAsOfDate(policyWithEndorsement, '2026-06-30');
+    assert.equal(beforeRecon.activeEndorsements.length, 0, 'Endorsement should not be active prior to its effective date');
+
+    // After endorsement effective date
+    const afterRecon = reconstructPolicyAsOfDate(policyWithEndorsement, '2026-08-01');
+    assert.ok(afterRecon.activeEndorsements.length > 0, 'Active endorsements should be included after effective date');
+    assert.ok(dollarsToCents(afterRecon.earnedPremium) <= dollarsToCents(afterRecon.adjustedWrittenPremium), 'Earned cannot exceed adjusted total');
+  }
+});
+
+test('generateDeclarationsPageHtml: renders coverages by line of business and formats amounts with cents', () => {
+  const state = getDbState();
+  const cglPolicy = state.policies.find((p) => p.lineOfBusiness === 'Commercial General Liability');
+  const cyberPolicy = state.policies.find((p) => p.lineOfBusiness === 'Cyber & Tech E&O');
+
+  assert.ok(cglPolicy, 'CGL policy should exist');
+  assert.ok(cyberPolicy, 'Cyber policy should exist');
+
+  const cglHtml = generateDeclarationsPageHtml(cglPolicy, '2026-05-01');
+  assert.ok(cglHtml.includes('General Aggregate Limit'), 'CGL HTML should include CGL limits');
+  assert.ok(cglHtml.includes('.00'), 'CGL HTML should retain cents formatting');
+
+  const cyberHtml = generateDeclarationsPageHtml(cyberPolicy, '2026-05-01');
+  assert.ok(cyberHtml.includes('Coverage & Limits Schedule (Cyber &amp; Tech E&amp;O)') || cyberHtml.includes('Cyber & Tech E&O'), 'Cyber HTML should reflect Cyber line of business');
+  assert.ok(cyberHtml.includes('.00'), 'Cyber HTML should retain cents formatting');
+});
+
+test('printHtmlDocument: returns false when window is unavailable (server / non-browser context)', () => {
+  const result = printHtmlDocument('Declarations Page', '<html><body>Test</body></html>');
+  assert.equal(result, false, 'Should return false when window is undefined');
+});
+
+

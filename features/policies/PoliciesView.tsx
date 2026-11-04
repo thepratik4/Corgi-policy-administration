@@ -9,6 +9,11 @@ import { StatusIndicator } from '../../components/ui/StatusIndicator';
 import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import {
+  generateDeclarationsPageHtml,
+  printHtmlDocument,
+  reconstructPolicyAsOfDate,
+} from '../../utils/documentGenerator';
+import {
   Search,
   Plus,
   ArrowLeft,
@@ -17,6 +22,8 @@ import {
   CheckCircle2,
   ArrowUpDown,
   Download,
+  Printer,
+  Calendar,
 } from 'lucide-react';
 
 const STATUS_FILTERS: ('All' | PolicyStatus)[] = [
@@ -81,10 +88,58 @@ export function PoliciesView() {
   const [endorseDate, setEndorseDate] = useState('2026-11-04');
   const [endorseError, setEndorseError] = useState('');
 
+  // As-Of Historical Declarations Modal State
+  const [asOfDecModalOpen, setAsOfDecModalOpen] = useState(false);
+  const [policyAsOfDate, setPolicyAsOfDate] = useState('2026-05-03');
+
   const selectedPolicy = useMemo(
     () => policies.find((p) => p.id === selectedPolicyId) || null,
     [policies, selectedPolicyId]
   );
+
+  const policyAsOfRecon = useMemo(() => {
+    if (!selectedPolicy || !policyAsOfDate) return null;
+    const targetTime = new Date(`${policyAsOfDate}T00:00:00Z`).getTime();
+    if (Number.isNaN(targetTime)) return null;
+    try {
+      return reconstructPolicyAsOfDate(selectedPolicy, policyAsOfDate);
+    } catch {
+      return null;
+    }
+  }, [selectedPolicy, policyAsOfDate]);
+
+  const handlePrintSelectedPolicyAsOf = () => {
+    if (!selectedPolicy || !policyAsOfDate) return;
+
+    const targetTime = new Date(`${policyAsOfDate}T00:00:00Z`).getTime();
+    const effTime = new Date(`${selectedPolicy.effectiveDate}T00:00:00Z`).getTime();
+    const expTime = new Date(`${selectedPolicy.expirationDate}T00:00:00Z`).getTime();
+
+    if (Number.isNaN(targetTime) || targetTime < effTime || targetTime > expTime) {
+      addToast({
+        title: 'Invalid As-Of Date',
+        description: `As-of date must fall within the policy term (${selectedPolicy.effectiveDate} to ${selectedPolicy.expirationDate}).`,
+        variant: 'error',
+      });
+      return;
+    }
+
+    const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
+    const html = generateDeclarationsPageHtml(selectedPolicy, policyAsOfDate, broker);
+    const printed = printHtmlDocument(
+      `Declarations_${selectedPolicy.policyNumber}_AsOf_${policyAsOfDate}`,
+      html
+    );
+
+    if (printed) {
+      setAsOfDecModalOpen(false);
+      addToast({
+        title: 'Generated Official Declarations Page',
+        description: `Reconstructed ${selectedPolicy.policyNumber} as it stood on ${policyAsOfDate}.`,
+        variant: 'success',
+      });
+    }
+  };
 
   const filteredPolicies = useMemo(() => {
     return policies
@@ -235,6 +290,22 @@ export function PoliciesView() {
                 >
                   <FilePlus2 className="w-3.5 h-3.5 text-[#EA580C]" />
                   <span>Endorse Policy</span>
+                </button>
+              )}
+
+              {selectedPolicy.status !== 'Draft' && selectedPolicy.status !== 'Pending' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedPolicy?.effectiveDate) {
+                      setPolicyAsOfDate(selectedPolicy.effectiveDate);
+                    }
+                    setAsOfDecModalOpen(true);
+                  }}
+                  className="px-3.5 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Printer className="w-3.5 h-3.5 text-[#EA580C]" />
+                  <span>As-Of Dec Page</span>
                 </button>
               )}
 
@@ -765,6 +836,99 @@ export function PoliciesView() {
             { label: 'Unearned Return Premium', value: formatCurrency(selectedPolicy.unearnedPremium) },
           ]}
         />
+
+        {/* As-Of Policy Declarations Page Modal (Domain Gauntlet #9) */}
+        <Modal
+          isOpen={asOfDecModalOpen}
+          onClose={() => setAsOfDecModalOpen(false)}
+          title={`Reconstruct Policy Declarations — ${selectedPolicy.policyNumber}`}
+          subtitle="Generate statutory Acord-standard Declarations Page and Endorsement Schedule as of any past calendar date."
+          maxWidthClass="max-w-2xl"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-4 bg-orange-50/60 border border-orange-200/80 rounded-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[#EA580C] block">
+                    Domain Gauntlet #9: As-Of Reconstruction
+                  </span>
+                  <label htmlFor="modal-as-of-date" className="text-xs font-semibold text-slate-900 mt-0.5 block">
+                    Reconstruction Date:
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-lg px-3 py-1.5 shadow-2xs">
+                  <Calendar className="w-4 h-4 text-[#EA580C]" />
+                  <input
+                    id="modal-as-of-date"
+                    type="date"
+                    aria-label="Reconstruction calendar date"
+                    value={policyAsOfDate}
+                    min={selectedPolicy.effectiveDate}
+                    max={selectedPolicy.expirationDate}
+                    onChange={(e) => setPolicyAsOfDate(e.target.value)}
+                    className="font-mono text-xs text-slate-900 font-semibold bg-transparent focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {policyAsOfRecon && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-2 border-t border-orange-100">
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/80">
+                    <span className="text-[10px] text-slate-500 block">Adjusted Premium</span>
+                    <span className="font-mono font-bold text-slate-900 text-xs mt-0.5 block">
+                      {formatCurrency(policyAsOfRecon.adjustedWrittenPremium)}
+                    </span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/80">
+                    <span className="text-[10px] text-slate-500 block">Earned as of Date</span>
+                    <span className="font-mono font-bold text-emerald-700 text-xs mt-0.5 block">
+                      {formatCurrency(policyAsOfRecon.earnedPremium)}
+                    </span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200/80">
+                    <span className="text-[10px] text-slate-500 block">Active Endorsements</span>
+                    <span className="font-mono font-bold text-[#EA580C] text-xs mt-0.5 block">
+                      {policyAsOfRecon.activeEndorsements.length} on or before date
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border border-slate-200 rounded-xl p-4 bg-slate-50 text-slate-700 space-y-2">
+              <p className="font-semibold text-slate-900 text-xs">
+                What will be generated:
+              </p>
+              <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
+                <li>Commercial Policy Declarations Page with Carrier & Insured headers.</li>
+                <li>Coverage schedules: Per-Occurrence & Aggregate liability limits.</li>
+                <li>Endorsement Schedule: Excludes changes entered after {policyAsOfDate}.</li>
+                <li>Statutory premium tie-out including Surplus Lines Tax (3.5%) & Stamping Fee ($25).</li>
+              </ul>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setAsOfDecModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handlePrintSelectedPolicyAsOf();
+                  setAsOfDecModalOpen(false);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-[#EA580C] hover:bg-[#C2410C] rounded-lg inline-flex items-center gap-1.5 shadow-2xs"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print Official Declarations Page (PDF)</span>
+              </button>
+            </div>
+          </div>
+        </Modal>
       </div>
     );
   }

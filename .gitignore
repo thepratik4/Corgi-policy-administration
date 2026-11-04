@@ -49,6 +49,7 @@ firebase-adminsdk*.json
 out/
 build/
 dist/
+*.tsbuildinfo
 .turbo/
 .cache/
 
