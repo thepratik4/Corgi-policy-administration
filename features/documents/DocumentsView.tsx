@@ -39,7 +39,7 @@ export function DocumentsView() {
 
   // As-Of Historical Document Generator State
   const [asOfPolicyId, setAsOfPolicyId] = useState<string>(policies[0]?.id || '');
-  const [asOfDate, setAsOfDate] = useState<string>('2026-05-03');
+  const [asOfDate, setAsOfDate] = useState<string>(policies[0]?.effectiveDate || '2026-05-03');
 
   const selectedAsOfPolicy = useMemo(() => {
     return policies.find((p) => p.id === asOfPolicyId) || policies[0] || null;
@@ -52,7 +52,11 @@ export function DocumentsView() {
 
   const asOfReconstruction = useMemo(() => {
     if (!selectedAsOfPolicy) return null;
-    return reconstructPolicyAsOfDate(selectedAsOfPolicy, asOfDate);
+    try {
+      return reconstructPolicyAsOfDate(selectedAsOfPolicy, asOfDate);
+    } catch {
+      return null;
+    }
   }, [selectedAsOfPolicy, asOfDate]);
 
   const filteredDocs = useMemo(() => {
@@ -71,6 +75,20 @@ export function DocumentsView() {
 
   const handlePrintAsOfDeclarations = () => {
     if (!selectedAsOfPolicy) return;
+
+    const targetTime = new Date(`${asOfDate}T00:00:00Z`).getTime();
+    const effTime = new Date(`${selectedAsOfPolicy.effectiveDate}T00:00:00Z`).getTime();
+    const expTime = new Date(`${selectedAsOfPolicy.expirationDate}T00:00:00Z`).getTime();
+
+    if (Number.isNaN(targetTime) || targetTime < effTime || targetTime > expTime) {
+      addToast({
+        title: 'Invalid As-Of Date',
+        description: `As-of date must fall within the policy term (${selectedAsOfPolicy.effectiveDate} to ${selectedAsOfPolicy.expirationDate}).`,
+        variant: 'error',
+      });
+      return;
+    }
+
     const html = generateDeclarationsPageHtml(selectedAsOfPolicy, asOfDate, selectedAsOfBroker);
     printHtmlDocument(
       `Declarations_${selectedAsOfPolicy.policyNumber}_AsOf_${asOfDate}`,
@@ -181,7 +199,14 @@ export function DocumentsView() {
                 id="asof-pol-select"
                 aria-label="Select policy for as-of historical reconstruction"
                 value={asOfPolicyId}
-                onChange={(e) => setAsOfPolicyId(e.target.value)}
+                onChange={(e) => {
+                  const newId = e.target.value;
+                  setAsOfPolicyId(newId);
+                  const matched = policies.find((p) => p.id === newId);
+                  if (matched?.effectiveDate) {
+                    setAsOfDate(matched.effectiveDate);
+                  }
+                }}
                 className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg text-slate-800 font-medium focus:ring-2 focus:ring-orange-500/20"
               >
                 {policies.map((p) => (
@@ -198,6 +223,8 @@ export function DocumentsView() {
                 type="date"
                 aria-label="Historical as-of date for document reconstruction"
                 value={asOfDate}
+                min={selectedAsOfPolicy?.effectiveDate}
+                max={selectedAsOfPolicy?.expirationDate}
                 onChange={(e) => setAsOfDate(e.target.value)}
                 className="text-xs text-slate-800 font-mono bg-transparent focus:outline-none"
               />

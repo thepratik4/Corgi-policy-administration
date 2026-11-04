@@ -29,7 +29,7 @@ test('MCP Tool Logic: get_policy_as_of reconstructs historical coverage and earn
   assert.equal(earnedCents + unearnedCents, totalCents, 'Earned + Unearned must equal total written premium');
 });
 
-test('MCP Tool Logic: get_ledger_balance verifies trial balance equality', () => {
+test('Seed ledger: verifies trial balance equality across transactions', () => {
   const state = getDbState();
   let totalDebitCents = 0;
   let totalCreditCents = 0;

@@ -269,14 +269,16 @@ export function PoliciesView() {
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => setAsOfDecModalOpen(true)}
-                className="px-3.5 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <Printer className="w-3.5 h-3.5 text-[#EA580C]" />
-                <span>As-Of Dec Page</span>
-              </button>
+              {selectedPolicy.status !== 'Draft' && selectedPolicy.status !== 'Pending' && (
+                <button
+                  type="button"
+                  onClick={() => setAsOfDecModalOpen(true)}
+                  className="px-3.5 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Printer className="w-3.5 h-3.5 text-[#EA580C]" />
+                  <span>As-Of Dec Page</span>
+                </button>
+              )}
 
               {selectedPolicy.status !== 'Cancelled' && selectedPolicy.status !== 'Expired' && (
                 <button
