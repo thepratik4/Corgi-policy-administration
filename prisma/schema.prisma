@@ -1,0 +1,298 @@
+// Prisma Schema for Corgi Commercial Policy Administration & Double-Entry Ledger
+// All monetary columns are stored as integer USD cents (*_cents) with explicit currency.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  OPERATIONS_ADMIN
+  FINANCE_APPROVER
+}
+
+enum KybStatus {
+  Approved
+  Pending
+  Failed
+}
+
+enum PolicyStatus {
+  Draft
+  Pending
+  Active
+  Cancelled
+  Expired
+}
+
+enum PaymentStatus {
+  Pending
+  Settled
+  Failed
+  Refunded
+}
+
+enum AccountCategory {
+  Asset
+  Liability
+  Revenue
+  Expense
+}
+
+enum NormalBalance {
+  Debit
+  Credit
+}
+
+enum JournalStatus {
+  POSTED
+  REVERSED
+}
+
+enum ApprovalStatus {
+  Pending
+  Approved
+  Rejected
+}
+
+model User {
+  id           String   @id @default(uuid())
+  supabaseUid  String?  @unique @map("supabase_uid")
+  email        String   @unique
+  fullName     String   @map("full_name")
+  role         UserRole
+  roleLabel    String   @map("role_label")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  journalEntries   JournalEntry[]
+  auditLogs        AuditLog[]
+  initiatedApprovals ApprovalRequest[] @relation("ApprovalInitiator")
+  decidedApprovals   ApprovalRequest[] @relation("ApprovalDecider")
+
+  @@map("users")
+}
+
+model Broker {
+  id                    String    @id @default(uuid())
+  code                  String    @unique
+  agencyName            String    @map("agency_name")
+  principalContact      String    @map("principal_contact")
+  email                 String
+  domicileState         String    @map("domicile_state")
+  stateLicense          String    @unique @map("state_license")
+  kybStatus             KybStatus @map("kyb_status")
+  commissionRateBps     Int       @map("commission_rate_bps") // e.g. 1250 = 12.50%
+  collectedPremiumCents Int       @default(0) @map("collected_premium_cents")
+  commissionEarnedCents Int       @default(0) @map("commission_earned_cents")
+  commissionPaidCents   Int       @default(0) @map("commission_paid_cents")
+  currency              String    @default("USD")
+  personaInquiryId      String    @map("persona_inquiry_id")
+  onboardedAt           String    @map("onboarded_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  policies Policy[]
+
+  @@map("brokers")
+}
+
+model Customer {
+  id        String   @id @default(uuid())
+  legalName String   @map("legal_name")
+  ein       String
+  industry  String
+  address   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  policies Policy[]
+
+  @@map("customers")
+}
+
+model Policy {
+  id                     String       @id @default(uuid())
+  policyNumber           String       @unique @map("policy_number")
+  customerId             String       @map("customer_id")
+  brokerId               String       @map("broker_id")
+  lineOfBusiness         String       @map("line_of_business")
+  status                 PolicyStatus
+  writtenPremiumCents    Int          @map("written_premium_cents")
+  taxesAndFeesCents      Int          @map("taxes_and_fees_cents")
+  totalInvoiceCents      Int          @map("total_invoice_cents")
+  earnedPremiumCents     Int          @default(0) @map("earned_premium_cents")
+  unearnedPremiumCents   Int          @map("unearned_premium_cents")
+  collectedPremiumCents  Int          @default(0) @map("collected_premium_cents")
+  aggregateLimitCents    Int          @map("aggregate_limit_cents")
+  occurrenceLimitCents   Int          @map("occurrence_limit_cents")
+  deductibleCents        Int          @map("deductible_cents")
+  currency               String       @default("USD")
+  effectiveDate          String       @map("effective_date")
+  expirationDate         String       @map("expiration_date")
+  underwriter            String
+  recordedAt             DateTime     @default(now()) @map("recorded_at")
+
+  customer  Customer         @relation(fields: [customerId], references: [id])
+  broker    Broker           @relation(fields: [brokerId], references: [id])
+  coverages PolicyCoverage[]
+  payments  Payment[]
+
+  @@index([brokerId])
+  @@index([customerId])
+  @@index([status])
+  @@map("policies")
+}
+
+model PolicyCoverage {
+  id               String @id @default(uuid())
+  policyId         String @map("policy_id")
+  code             String
+  name             String
+  limitCents       Int    @map("limit_cents")
+  deductibleCents  Int    @map("deductible_cents")
+  basePremiumCents Int    @map("base_premium_cents")
+  currency         String @default("USD")
+
+  policy Policy @relation(fields: [policyId], references: [id])
+
+  @@index([policyId])
+  @@map("policy_coverages")
+}
+
+model Payment {
+  id                    String        @id @default(uuid())
+  policyId              String        @map("policy_id")
+  stripePaymentIntentId String        @unique @map("stripe_payment_intent_id")
+  stripeChargeId        String        @map("stripe_charge_id")
+  amountCents           Int           @map("amount_cents")
+  currency              String        @default("USD")
+  status                PaymentStatus
+  paymentMethod         String        @map("payment_method")
+  lastWebhookEvent      String        @map("last_webhook_event")
+  idempotencyKey        String        @unique @map("idempotency_key")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+
+  policy Policy @relation(fields: [policyId], references: [id])
+
+  @@index([policyId])
+  @@index([status])
+  @@map("payments")
+}
+
+model LedgerAccount {
+  id            String          @id @default(uuid())
+  code          String          @unique
+  name          String
+  category      AccountCategory
+  normalBalance NormalBalance   @map("normal_balance")
+  currency      String          @default("USD")
+  balanceCents  Int             @default(0) @map("balance_cents")
+  description   String
+
+  lines JournalLine[]
+
+  @@map("ledger_accounts")
+}
+
+model JournalEntry {
+  id                String        @id @default(uuid())
+  journalNumber     String        @unique @map("journal_number")
+  effectiveDate     String        @map("effective_date")
+  recordedAt        DateTime      @default(now()) @map("recorded_at")
+  reference         String
+  memo              String
+  sourceModule      String        @map("source_module")
+  postedByUserId    String?       @map("posted_by_user_id")
+  postedByEmail     String        @map("posted_by_email")
+  status            JournalStatus @default(POSTED)
+  reversalOfEntryId String?       @unique @map("reversal_of_entry_id")
+  reversedByEntryId String?       @unique @map("reversed_by_entry_id")
+
+  postedBy User?         @relation(fields: [postedByUserId], references: [id])
+  lines    JournalLine[]
+
+  @@index([effectiveDate])
+  @@index([reference])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String @id @default(uuid())
+  journalEntryId String @map("journal_entry_id")
+  accountId      String @map("account_id")
+  accountCode    String @map("account_code")
+  accountName    String @map("account_name")
+  debitCents     Int    @default(0) @map("debit_cents")
+  creditCents    Int    @default(0) @map("credit_cents")
+  currency       String @default("USD")
+
+  journalEntry JournalEntry  @relation(fields: [journalEntryId], references: [id])
+  account      LedgerAccount @relation(fields: [accountId], references: [id])
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@map("journal_lines")
+}
+
+model WebhookEvent {
+  id              String   @id @default(uuid())
+  stripeEventId   String   @unique @map("stripe_event_id")
+  eventType       String   @map("event_type")
+  paymentIntentId String?  @map("payment_intent_id")
+  payloadJson     String   @map("payload_json")
+  status          String   @default("PROCESSED")
+  processedAt     DateTime @default(now()) @map("processed_at")
+  recordedAt      DateTime @default(now()) @map("recorded_at")
+
+  @@index([paymentIntentId])
+  @@map("webhook_events")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?  @map("actor_user_id")
+  actorEmail   String   @map("actor_email")
+  actorRole    String   @map("actor_role")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  metadataJson String   @map("metadata_json")
+  recordedAt   DateTime @default(now()) @map("recorded_at")
+
+  actor User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([recordedAt])
+  @@map("audit_logs")
+}
+
+model ApprovalRequest {
+  id              String         @id @default(uuid())
+  referenceNumber String         @unique @map("reference_number")
+  actionType      String         @map("action_type")
+  targetEntityId  String         @map("target_entity_id")
+  targetReference String         @map("target_reference")
+  customerName    String         @map("customer_name")
+  amountCents     Int            @map("amount_cents")
+  currency        String         @default("USD")
+  initiatorUserId String?        @map("initiator_user_id")
+  initiatorName   String         @map("initiator_name")
+  initiatorEmail  String         @map("initiator_email")
+  initiatorRole   UserRole       @map("initiator_role")
+  reason          String
+  status          ApprovalStatus @default(Pending)
+  decidedByUserId String?        @map("decided_by_user_id")
+  decidedByName   String?        @map("decided_by_name")
+  decidedByEmail  String?        @map("decided_by_email")
+  decidedAt       DateTime?      @map("decided_at")
+  decisionNote    String?        @map("decision_note")
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  initiator User? @relation("ApprovalInitiator", fields: [initiatorUserId], references: [id])
+  decider   User? @relation("ApprovalDecider", fields: [decidedByUserId], references: [id])
+
+  @@index([status])
+  @@map("approval_requests")
+}

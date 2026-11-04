@@ -1,0 +1,113 @@
+# ==========================================
+# Dependencies
+# ==========================================
+node_modules/
+.pnp
+.pnp.js
+
+# ==========================================
+# Environment Variables & Secrets (CRITICAL)
+# ==========================================
+# Ignore all .env files and variants
+.env
+.env.*
+*.env
+.env*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Safely track example configuration template only
+!.env.example
+
+# Secret keys, credentials, tokens & certificates
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.pkcs12
+*.pub
+*.asc
+*.gpg
+*.ca-bundle
+*secret*
+*credential*
+*token*
+*.id_rsa
+*.id_ed25519
+*id_rsa*
+*id_ed25519*
+serviceAccount*.json
+firebase-adminsdk*.json
+
+# ==========================================
+# Next.js Build Outputs & Caches
+# ==========================================
+.next/
+out/
+build/
+dist/
+.turbo/
+.cache/
+
+# ==========================================
+# Runtime Data & Local Databases
+# ==========================================
+.data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ==========================================
+# Logs & Diagnostic Dumps
+# ==========================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ==========================================
+# Operating System & IDE Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+coverage/
+*.lcov
+.nyc_output
+
+# ==========================================
+# Temporary & Artifact Dirs
+# ==========================================
+.aistudio/
+.gemini/
+.claude/
+.cursor/
+.tempmediaStorage/
+*.tmp
+*.temp
