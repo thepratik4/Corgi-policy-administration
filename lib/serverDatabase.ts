@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { getSupabaseClient } from './supabaseClient';
 import {
   ApprovalRequest,
   AuditLogRecord,
@@ -141,6 +142,207 @@ function persistDbState(state: CorgiDatabaseState): void {
     fs.renameSync(tmpFile, DB_FILE);
   } catch (err) {
     console.error('Failed to persist Corgi DB file:', err);
+  }
+
+  // Asynchronously synchronize snapshot & relational tables with Supabase
+  void syncStateToSupabase(state);
+}
+
+let _hasHydratedFromCloud = false;
+
+/**
+ * Hydrates database state from Supabase if credentials are valid and a cloud snapshot exists.
+ */
+export async function hydrateStateFromSupabaseIfAvailable(force = false): Promise<CorgiDatabaseState | null> {
+  if (_hasHydratedFromCloud && !force && global._corgiDbState) {
+    return global._corgiDbState;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return null;
+
+    const { data, error } = await supabase
+      .from('corgi_system_state')
+      .select('state')
+      .eq('key', 'ACTIVE_SNAPSHOT')
+      .maybeSingle();
+
+    if (!error && data?.state && Array.isArray((data.state as CorgiDatabaseState).policies)) {
+      const cloudState = data.state as CorgiDatabaseState;
+      global._corgiDbState = cloudState;
+      _hasHydratedFromCloud = true;
+
+      try {
+        if (!fs.existsSync(DATA_DIR)) {
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+        const tmpFile = `${DB_FILE}.tmp`;
+        fs.writeFileSync(tmpFile, JSON.stringify(cloudState, null, 2), 'utf8');
+        fs.renameSync(tmpFile, DB_FILE);
+      } catch {}
+
+      return cloudState;
+    }
+  } catch {
+    // Offline resilience: fallback safely to local cache
+  }
+
+  _hasHydratedFromCloud = true;
+  return null;
+}
+
+/**
+ * Asynchronously synchronizes state snapshot and relational tables to Supabase.
+ */
+export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    // 1. Snapshot sync
+    await supabase.from('corgi_system_state').upsert(
+      {
+        key: 'ACTIVE_SNAPSHOT',
+        state: state,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'key' }
+    );
+
+    // 2. Policies sync
+    const policyRows = state.policies.map((p) => ({
+      id: p.id,
+      policy_number: p.policyNumber,
+      customer_name: p.customerName,
+      customer_industry: p.customerIndustry,
+      customer_ein: p.customerEin,
+      customer_address: p.customerAddress,
+      broker_id: p.brokerId,
+      broker_name: p.brokerName,
+      line_of_business: p.lineOfBusiness,
+      status: p.status,
+      written_premium_cents: dollarsToCents(p.writtenPremium),
+      taxes_and_fees_cents: dollarsToCents(p.taxesAndFees),
+      total_invoice_cents: dollarsToCents(p.writtenPremium + p.taxesAndFees),
+      earned_premium_cents: dollarsToCents(p.earnedPremium),
+      unearned_premium_cents: dollarsToCents(p.unearnedPremium),
+      collected_premium_cents: dollarsToCents(p.collectedPremium),
+      aggregate_limit_cents: dollarsToCents(p.aggregateCoverageLimit),
+      occurrence_limit_cents: dollarsToCents(p.perOccurrenceLimit),
+      deductible_cents: dollarsToCents(p.deductible),
+      currency: 'USD',
+      effective_date: p.effectiveDate,
+      expiration_date: p.expirationDate,
+      bind_date: p.bindDate || (p.status !== 'Draft' && p.status !== 'Pending' ? p.effectiveDate : null),
+      cancellation_date: p.cancellationDate || null,
+      underwriter: p.underwriter,
+      coverages: p.coverages || [],
+      endorsements: p.endorsements || [],
+      recorded_at: p.updatedAt ? `${p.updatedAt}T00:00:00Z` : new Date().toISOString(),
+    }));
+    await supabase.from('policies').upsert(policyRows, { onConflict: 'id' });
+
+    // 3. Payments sync
+    const paymentRows = state.payments.map((pay) => ({
+      id: pay.id,
+      policy_id: pay.policyId,
+      policy_number: pay.policyNumber,
+      customer_name: pay.customerName,
+      stripe_payment_intent_id: pay.stripePaymentIntentId,
+      stripe_charge_id: pay.stripePaymentIntentId.replace('pi_', 'ch_'),
+      amount_cents: dollarsToCents(pay.amount),
+      refunded_amount_cents: dollarsToCents(pay.refundedAmount || 0),
+      refunded_at: pay.refundedAt || null,
+      refund_reason: pay.refundReason || null,
+      currency: 'USD',
+      status: pay.status,
+      payment_method: pay.paymentMethod,
+      is_sandbox: true,
+      ledger_transaction_id: pay.ledgerTransactionId || '',
+      created_at: pay.createdAt,
+    }));
+    await supabase.from('payments').upsert(paymentRows, { onConflict: 'id' });
+
+    // 4. Journal Entries sync
+    const journalRows = state.ledgerTransactions.map((txn) => ({
+      id: txn.id,
+      journal_number: txn.journalNumber,
+      effective_date: txn.timestamp.slice(0, 10),
+      recorded_at: txn.timestamp,
+      reference: txn.reference,
+      reference_type: txn.referenceType,
+      memo: txn.description,
+      source_module: 'POLICY_ADMIN',
+      posted_by_email: txn.postedBy.includes('@') ? txn.postedBy : 'system.ledger@corgi.insure',
+      status: txn.status === 'Posted' ? 'POSTED' : 'REVERSED',
+      reverses_journal_number: txn.reversesJournalNumber || null,
+      reversed_by_journal_number: txn.reversedByJournalNumber || null,
+      rebooked_journal_number: txn.rebookedJournalNumber || null,
+    }));
+    await supabase.from('journal_entries').upsert(journalRows, { onConflict: 'id', ignoreDuplicates: true });
+
+    // 5. Journal Lines sync
+    const lineRows = state.ledgerTransactions.flatMap((txn) =>
+      txn.lines.map((ln) => ({
+        id: ln.id,
+        journal_entry_id: txn.id,
+        account_code: ln.accountCode,
+        account_name: ln.accountName,
+        debit_cents: dollarsToCents(ln.debit),
+        credit_cents: dollarsToCents(ln.credit),
+        currency: 'USD',
+      }))
+    );
+    await supabase.from('journal_lines').upsert(lineRows, { onConflict: 'id', ignoreDuplicates: true });
+
+    // 6. Approval Requests sync
+    const approvalRows = state.approvalRequests.map((a) => ({
+      id: a.id,
+      reference_number: a.referenceNumber,
+      action_type: a.actionType,
+      target_entity_id: a.targetEntityId,
+      target_reference: a.targetReference,
+      customer_name: a.customerName,
+      amount_cents: dollarsToCents(a.amount),
+      currency: 'USD',
+      initiator_name: a.initiatorName,
+      initiator_email: a.initiatorEmail,
+      initiator_role: a.initiatorRole,
+      reason: a.reason,
+      status: a.status,
+      decided_by_name: a.decidedByName || null,
+      decided_by_email: a.decidedByEmail || null,
+      decided_at: a.decidedAt || null,
+      decision_note: a.decisionNote || null,
+      created_at: a.createdAt || new Date().toISOString(),
+    }));
+    await supabase.from('approval_requests').upsert(approvalRows, { onConflict: 'id' });
+
+    // 7. Claims sync
+    const claimRows = state.claims.map((c) => ({
+      id: c.id,
+      claim_number: c.claimNumber,
+      policy_id: c.policyId,
+      policy_number: c.policyNumber,
+      customer_name: c.customerName,
+      line_of_business: c.lineOfBusiness,
+      loss_date: c.lossDate,
+      reported_date: c.reportedDate,
+      description: c.description,
+      status: c.status,
+      payout_status: c.payoutStatus,
+      policy_coverage_limit_cents: dollarsToCents(c.policyCoverageLimit),
+      policy_deductible_cents: dollarsToCents(c.policyDeductible),
+      claimed_amount_cents: dollarsToCents(c.claimedAmount),
+      paid_amount_cents: dollarsToCents(c.paidAmount),
+      outstanding_reserve_cents: dollarsToCents(c.outstandingReserve),
+      adjuster_name: c.adjusterName,
+      created_at: new Date().toISOString(),
+    }));
+    await supabase.from('claims').upsert(claimRows, { onConflict: 'id' });
+  } catch {
+    // Non-fatal background sync catch
   }
 }
 
