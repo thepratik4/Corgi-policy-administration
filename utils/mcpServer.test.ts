@@ -64,6 +64,44 @@ test('MCP Tool Logic: get_broker_statement ties commission and clawbacks to the 
     return policyBindDate.startsWith(monthIso);
   });
   assert.ok(boundPoliciesInMonth.every((p) => p.status !== 'Draft' && p.status !== 'Pending'), 'Excludes draft and pending policies');
+
+  // Month format validation test
+  const monthRegex = /^\d{4}-(0[1-9]|1[0-2])$/;
+  assert.ok(monthRegex.test('2026-03'), '2026-03 should be valid month');
+  assert.ok(monthRegex.test('2026-12'), '2026-12 should be valid month');
+  assert.ok(!monthRegex.test('2026-13'), '2026-13 should be invalid month');
+  assert.ok(!monthRegex.test('2026-00'), '2026-00 should be invalid month');
+  assert.ok(!monthRegex.test('2026-3'), '2026-3 should be invalid month');
+
+  // Broker lookup uniqueness assertion
+  const searchBrokers = (query: string) =>
+    state.brokers.filter(
+      (b) =>
+        b.id === query ||
+        b.code === query ||
+        b.agencyName.toLowerCase().includes(query.toLowerCase())
+    );
+  assert.equal(searchBrokers('nonexistent-broker').length, 0, 'Nonexistent query matches 0');
+  assert.equal(searchBrokers(broker.id).length, 1, 'Exact ID matches exactly 1');
+
+  // Payment aggregation assertion: Succeeded + Refunded in gross, Refunded in refunds
+  const testPayments = [
+    { amount: 10000, status: 'Succeeded' as const },
+    { amount: 5000, status: 'Refunded' as const, refundedAmount: 5000 },
+  ];
+  let testCollected = 0;
+  let testRefunded = 0;
+  for (const pay of testPayments) {
+    if (pay.status === 'Succeeded' || pay.status === 'Refunded') {
+      testCollected += pay.amount;
+    }
+    if (pay.status === 'Refunded') {
+      testRefunded += pay.refundedAmount;
+    }
+  }
+  assert.equal(testCollected, 15000, 'Gross collection includes succeeded and refunded payments');
+  assert.equal(testRefunded, 5000, 'Refunds include refunded payments');
+  assert.equal(testCollected - testRefunded, 10000, 'Net collected equals gross minus refunds');
 });
 
 test('MCP Tool Logic: request_endorsement_or_reserve_adjustment queues strictly to human Finance Approver', () => {

@@ -303,17 +303,34 @@ server.tool(
   'Produces the official monthly commission settlement statement for a broker, tying collected premium, commission earned, and clawbacks to the cent.',
   {
     brokerIdOrName: z.string().describe('Broker ID (e.g. "brk-apex-01") or company name'),
-    monthIso: z.string().describe('Month in YYYY-MM format (e.g. "2026-11")'),
+    monthIso: z
+      .string()
+      .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Month must be in exact YYYY-MM format with month 01-12 (e.g. "2026-03")')
+      .describe('Month in YYYY-MM format (e.g. "2026-11")'),
   },
   async ({ brokerIdOrName, monthIso }) => {
     const state = getDbState();
-    const broker = state.brokers.find(
+    const query = typeof brokerIdOrName === 'string' ? brokerIdOrName.trim() : '';
+    if (!query) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'Broker search query cannot be empty.',
+          },
+        ],
+      };
+    }
+
+    const matchedBrokers = state.brokers.filter(
       (b) =>
-        b.id === brokerIdOrName ||
-        b.agencyName.toLowerCase().includes(brokerIdOrName.toLowerCase())
+        b.id === query ||
+        b.code === query ||
+        b.agencyName.toLowerCase().includes(query.toLowerCase())
     );
 
-    if (!broker) {
+    if (matchedBrokers.length === 0) {
       return {
         isError: true,
         content: [
@@ -324,6 +341,20 @@ server.tool(
         ],
       };
     }
+
+    if (matchedBrokers.length > 1) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `Multiple brokers matched query "${brokerIdOrName}": ${matchedBrokers.map((m) => `${m.agencyName} (${m.id})`).join(', ')}. Please specify an exact broker ID.`,
+          },
+        ],
+      };
+    }
+
+    const broker = matchedBrokers[0];
 
     const brokerPolicies = state.policies.filter((p) => p.brokerId === broker.id);
     const policyNumbers = new Set(brokerPolicies.map((p) => p.policyNumber));
@@ -347,10 +378,12 @@ server.tool(
     let totalRefundedCents = 0;
 
     for (const pay of monthPayments) {
-      if (pay.status === 'Succeeded') {
+      if (pay.status === 'Succeeded' || pay.status === 'Refunded') {
         totalCollectedCents += dollarsToCents(pay.amount);
-      } else if (pay.status === 'Refunded') {
-        totalRefundedCents += dollarsToCents(pay.amount);
+      }
+      if (pay.status === 'Refunded') {
+        const refundedCents = pay.refundedAmount ? dollarsToCents(pay.refundedAmount) : dollarsToCents(pay.amount);
+        totalRefundedCents += refundedCents;
       }
     }
 
