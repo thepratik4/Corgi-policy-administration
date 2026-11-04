@@ -347,15 +347,15 @@ export function generateDeclarationsPageHtml(
 
 /**
  * Triggers native browser print dialog with the rendered document in a clean window.
- * Allows instant direct printing or "Save as PDF".
+ * Allows instant direct printing or "Save as PDF". Returns true on success, false if window/popup is unavailable.
  */
-export function printHtmlDocument(title: string, htmlContent: string): void {
-  if (typeof window === 'undefined') return;
+export function printHtmlDocument(title: string, htmlContent: string): boolean {
+  if (typeof window === 'undefined') return false;
 
   const printWindow = window.open('', '_blank', 'width=880,height=1000');
   if (!printWindow) {
     alert('Please allow popups to generate and print official policy documents.');
-    return;
+    return false;
   }
 
   printWindow.document.open();
@@ -368,5 +368,7 @@ export function printHtmlDocument(title: string, htmlContent: string): void {
     printWindow.focus();
     printWindow.print();
   };
+
+  return true;
 }
 

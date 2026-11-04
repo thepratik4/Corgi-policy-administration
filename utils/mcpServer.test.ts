@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getDbState, resetDatabaseToSeed } from '../lib/serverDatabase';
 import { dollarsToCents, centsToDollars } from '../utils/financialRules';
-import { reconstructPolicyAsOfDate, generateDeclarationsPageHtml } from '../utils/documentGenerator';
+import { reconstructPolicyAsOfDate, generateDeclarationsPageHtml, printHtmlDocument } from '../utils/documentGenerator';
 
 test('MCP Tool Logic: get_policy_as_of reconstructs historical coverage and earned premium', () => {
   resetDatabaseToSeed();
@@ -139,6 +139,11 @@ test('generateDeclarationsPageHtml: renders coverages by line of business and fo
   const cyberHtml = generateDeclarationsPageHtml(cyberPolicy, '2026-05-01');
   assert.ok(cyberHtml.includes('Coverage & Limits Schedule (Cyber &amp; Tech E&amp;O)') || cyberHtml.includes('Cyber & Tech E&O'), 'Cyber HTML should reflect Cyber line of business');
   assert.ok(cyberHtml.includes('.00'), 'Cyber HTML should retain cents formatting');
+});
+
+test('printHtmlDocument: returns false when window is unavailable (server / non-browser context)', () => {
+  const result = printHtmlDocument('Declarations Page', '<html><body>Test</body></html>');
+  assert.equal(result, false, 'Should return false when window is undefined');
 });
 
 

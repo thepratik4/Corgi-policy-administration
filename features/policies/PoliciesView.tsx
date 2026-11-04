@@ -126,15 +126,19 @@ export function PoliciesView() {
 
     const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
     const html = generateDeclarationsPageHtml(selectedPolicy, policyAsOfDate, broker);
-    printHtmlDocument(
+    const printed = printHtmlDocument(
       `Declarations_${selectedPolicy.policyNumber}_AsOf_${policyAsOfDate}`,
       html
     );
-    addToast({
-      title: 'Generated Official Declarations Page',
-      description: `Reconstructed ${selectedPolicy.policyNumber} as it stood on ${policyAsOfDate}.`,
-      variant: 'success',
-    });
+
+    if (printed) {
+      setAsOfDecModalOpen(false);
+      addToast({
+        title: 'Generated Official Declarations Page',
+        description: `Reconstructed ${selectedPolicy.policyNumber} as it stood on ${policyAsOfDate}.`,
+        variant: 'success',
+      });
+    }
   };
 
   const filteredPolicies = useMemo(() => {

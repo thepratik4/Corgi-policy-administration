@@ -90,15 +90,18 @@ export function DocumentsView() {
     }
 
     const html = generateDeclarationsPageHtml(selectedAsOfPolicy, asOfDate, selectedAsOfBroker);
-    printHtmlDocument(
+    const printed = printHtmlDocument(
       `Declarations_${selectedAsOfPolicy.policyNumber}_AsOf_${asOfDate}`,
       html
     );
-    addToast({
-      title: 'Print Dialog Initiated',
-      description: `Generated Official Declarations for ${selectedAsOfPolicy.policyNumber} as of ${asOfDate}.`,
-      variant: 'success',
-    });
+
+    if (printed) {
+      addToast({
+        title: 'Print Dialog Initiated',
+        description: `Generated Official Declarations for ${selectedAsOfPolicy.policyNumber} as of ${asOfDate}.`,
+        variant: 'success',
+      });
+    }
   };
 
   const handleDownload = (doc: PolicyDocument) => {
@@ -114,12 +117,14 @@ export function DocumentsView() {
         doc.generatedAt.slice(0, 10),
         broker
       );
-      printHtmlDocument(doc.title, html);
-      addToast({
-        title: `Opened Official PDF: ${doc.documentCode}`,
-        description: `Generated printable Acord-standard Declarations Page for ${matchedPolicy.policyNumber}.`,
-        variant: 'success',
-      });
+      const printed = printHtmlDocument(doc.title, html);
+      if (printed) {
+        addToast({
+          title: `Opened Official PDF: ${doc.documentCode}`,
+          description: `Generated printable Acord-standard Declarations Page for ${matchedPolicy.policyNumber}.`,
+          variant: 'success',
+        });
+      }
       return;
     }
 
@@ -157,12 +162,14 @@ export function DocumentsView() {
 </body>
 </html>`;
 
-    printHtmlDocument(doc.title, genericHtml);
-    addToast({
-      title: `Generated ${doc.documentCode}.pdf`,
-      description: `${doc.title} rendered and ready for print or Save as PDF.`,
-      variant: 'success',
-    });
+    const printed = printHtmlDocument(doc.title, genericHtml);
+    if (printed) {
+      addToast({
+        title: `Generated ${doc.documentCode}.pdf`,
+        description: `${doc.title} rendered and ready for print or Save as PDF.`,
+        variant: 'success',
+      });
+    }
   };
 
   return (
