@@ -160,7 +160,13 @@ export function getDbState(): CorgiDatabaseState {
   return fresh;
 }
 
+let _pendingSyncPromise: Promise<void> | null = null;
+let _lastLocalMutationTimestamp = 0;
+let _lastSyncError: Error | null = null;
+
 export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
+  _lastLocalMutationTimestamp = Date.now();
+
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -172,8 +178,20 @@ export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
     console.error('Failed to persist Corgi DB file:', err);
   }
 
-  // Await cloud synchronization rather than discarding with void
-  await syncStateToSupabase(state);
+  // Await cloud synchronization and track pending promise
+  const syncPromise = syncStateToSupabase(state);
+  _pendingSyncPromise = syncPromise;
+  try {
+    await syncPromise;
+    _lastSyncError = null;
+  } catch (err) {
+    _lastSyncError = err instanceof Error ? err : new Error(String(err));
+    console.warn('Supabase sync warning (local state preserved):', _lastSyncError.message);
+  } finally {
+    if (_pendingSyncPromise === syncPromise) {
+      _pendingSyncPromise = null;
+    }
+  }
 }
 
 let _hasHydratedFromCloud = false;
@@ -182,6 +200,16 @@ let _hasHydratedFromCloud = false;
  * Hydrates database state from Supabase if credentials are valid and a cloud snapshot exists.
  */
 export async function hydrateStateFromSupabaseIfAvailable(force = false): Promise<CorgiDatabaseState | null> {
+  // If a local write/sync is currently pending, wait for it before evaluating cloud state
+  if (_pendingSyncPromise) {
+    try {
+      await _pendingSyncPromise;
+    } catch {
+      // Pending write failed; preserve local mutations and do not overwrite
+      return global._corgiDbState || null;
+    }
+  }
+
   if (_hasHydratedFromCloud && !force && global._corgiDbState) {
     return global._corgiDbState;
   }
@@ -192,14 +220,22 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
 
     const { data, error } = await supabase
       .from('corgi_system_state')
-      .select('state')
+      .select('state, updated_at')
       .eq('key', 'ACTIVE_SNAPSHOT')
       .maybeSingle();
 
     if (!error && data?.state && isValidDatabaseState(data.state)) {
+      const cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
+
+      // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
+      if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt) {
+        return global._corgiDbState;
+      }
+
       const cloudState = data.state;
       global._corgiDbState = cloudState;
       _hasHydratedFromCloud = true;
+      _lastLocalMutationTimestamp = cloudUpdatedAt || Date.now();
 
       try {
         if (!fs.existsSync(DATA_DIR)) {
@@ -212,11 +248,14 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
 
       return cloudState;
     }
-  } catch {
+  } catch (err) {
     // Offline resilience: fallback safely to local cache
+    console.warn('Hydration notice (offline fallback active):', err instanceof Error ? err.message : err);
   }
 
-  _hasHydratedFromCloud = true;
+  // NOTE: _hasHydratedFromCloud is intentionally NOT set to true here.
+  // Leaving it false allows subsequent requests to retry when cloud connectivity restores,
+  // while returning null lets callers fall back seamlessly to the local cache.
   return null;
 }
 
