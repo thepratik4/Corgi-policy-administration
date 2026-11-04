@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "clean": "next clean",
     "mcp": "npx tsx mcp-server.ts",
-    "test": "node --test utils/*.test.ts"
+    "test": "bun test"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",

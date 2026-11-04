@@ -11,6 +11,10 @@ export function reconstructPolicyAsOfDate(policy: Policy, asOfDate: string) {
   const inceptionTime = new Date(`${policy.effectiveDate}T00:00:00Z`).getTime();
   const expirationTime = new Date(`${policy.expirationDate}T00:00:00Z`).getTime();
 
+  if (Number.isNaN(targetTime)) {
+    throw new Error(`Invalid asOfDate "${asOfDate}".`);
+  }
+
   // Active endorsements effective on or prior to the target date
   const activeEndorsements = policy.endorsements.filter((e) => {
     const eff = new Date(`${e.effectiveDate}T00:00:00Z`).getTime();
@@ -22,14 +26,46 @@ export function reconstructPolicyAsOfDate(policy: Policy, asOfDate: string) {
 
   const totalTermMs = Math.max(1, expirationTime - inceptionTime);
   const elapsedMs = Math.min(Math.max(0, targetTime - inceptionTime), totalTermMs);
-  const earnedFraction = elapsedMs / totalTermMs;
+  const wasIssued = inceptionTime <= targetTime;
+  const isExpired = expirationTime < targetTime;
+
+  // Base policy earned premium
+  const baseEarnedFraction = wasIssued ? elapsedMs / totalTermMs : 0;
+  const basePremiumCents = dollarsToCents(policy.writtenPremium);
+  let earnedPremiumCents = Math.round(basePremiumCents * baseEarnedFraction);
+
+  // Each endorsement's premium is earned strictly for elapsed coverage since its own effective date
+  for (const end of activeEndorsements) {
+    const endEffTime = new Date(`${end.effectiveDate}T00:00:00Z`).getTime();
+    const endTermMs = Math.max(1, expirationTime - endEffTime);
+    const endElapsedMs = Math.min(Math.max(0, targetTime - endEffTime), endTermMs);
+    const endEarnedFraction = endElapsedMs / endTermMs;
+    const endDeltaCents = dollarsToCents(end.premiumDelta);
+    earnedPremiumCents += Math.round(endDeltaCents * endEarnedFraction);
+  }
 
   const totalPremiumCents = dollarsToCents(adjustedWrittenPremium);
-  const earnedPremiumCents = Math.round(totalPremiumCents * earnedFraction);
   const unearnedPremiumCents = Math.max(0, totalPremiumCents - earnedPremiumCents);
+
+  // Determine policy status as of the requested historical date
+  let statusAsOfDate = policy.status;
+  if (!wasIssued) {
+    statusAsOfDate = 'Pending';
+  } else if (isExpired) {
+    statusAsOfDate = 'Expired';
+  } else if (policy.status === 'Cancelled' || policy.cancellationDate) {
+    const cancelDate = policy.cancellationDate || policy.updatedAt.slice(0, 10);
+    const cancelTime = new Date(`${cancelDate}T00:00:00Z`).getTime();
+    if (!Number.isNaN(cancelTime) && targetTime < cancelTime) {
+      statusAsOfDate = 'Active';
+    } else {
+      statusAsOfDate = 'Cancelled';
+    }
+  }
 
   return {
     asOfDate,
+    statusAsOfDate,
     activeEndorsements,
     adjustedWrittenPremium,
     earnedPremium: centsToDollars(earnedPremiumCents),
@@ -115,7 +151,7 @@ export function generateDeclarationsPageHtml(
       <div class="card-row"><span class="label">Broker Agency:</span><span class="val">${broker ? broker.agencyName : 'Direct / Apex Insurance'}</span></div>
       <div class="card-row"><span class="label">Producer License:</span><span class="val mono">${broker ? broker.stateLicense : 'PROD-CA-9942'}</span></div>
       <div class="card-row"><span class="label">Line of Business:</span><span class="val">${policy.lineOfBusiness}</span></div>
-      <div class="card-row"><span class="label">Policy Status (As Of):</span><span class="val" style="color: #EA580C;">${policy.status}</span></div>
+      <div class="card-row"><span class="label">Policy Status (As Of):</span><span class="val" style="color: #EA580C;">${recon.statusAsOfDate}</span></div>
     </div>
   </div>
 

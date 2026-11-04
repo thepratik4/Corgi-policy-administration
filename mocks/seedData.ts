@@ -375,6 +375,7 @@ export const INITIAL_POLICIES: Policy[] = [
     effectiveDate: '2026-02-01',
     expirationDate: '2027-02-01',
     status: 'Cancelled',
+    cancellationDate: '2026-06-05',
     aggregateCoverageLimit: 1000000,
     perOccurrenceLimit: 500000,
     deductible: 10000,

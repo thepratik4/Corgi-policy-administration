@@ -56,7 +56,7 @@ The Corgi platform enforces a strict architectural boundary: **Autonomous agents
 ## Architectural Guarantee
 
 The Corgi Model Context Protocol implementation encodes these principles directly in code:
-- All MCP read tools (`get_policy_as_of`, `get_ledger_balance`, `get_broker_statement`) are stateless and read-only.
-- The single MCP write tool (`request_endorsement_or_reserve_adjustment`) **hard-codes** `requiresRole: 'FINANCE_APPROVER'` and status `PENDING`.
+- All MCP read tools (`get_policy_as_of`, `get_ledger_balance`, `get_broker_statement`) read through `getDbState()` without calling `runDbTransaction()`. They operate on the in-process database cache and do not mutate business records (disclosing that on cold start when the database file is missing or invalid, `getDbState()` initializes and writes the seed state to disk).
+- The single MCP write tool (`request_endorsement_or_reserve_adjustment`) **hard-codes** `requiresRole: 'FINANCE_APPROVER'` and status `Pending`.
 - No tool exists in the MCP server that can emit a Stripe payout, execute an SQL `DELETE` or `UPDATE`, or post a journal transaction without human verification.
 

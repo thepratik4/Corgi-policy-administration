@@ -1074,9 +1074,11 @@ export function cancelPolicyInDb(params: {
       throw new Error('Policy not found.');
     }
     const unearnedCents = dollarsToCents(policy.unearnedPremium);
+    const cancelIsoDate = new Date().toISOString().slice(0, 10);
     policy.status = 'Cancelled';
+    policy.cancellationDate = cancelIsoDate;
     policy.unearnedPremium = 0;
-    policy.updatedAt = new Date().toISOString().slice(0, 10);
+    policy.updatedAt = cancelIsoDate;
 
     if (unearnedCents > 0) {
       const reqSeq = 410 + state.approvalRequests.length;

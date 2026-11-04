@@ -51,6 +51,7 @@ export interface Policy {
   effectiveDate: string;
   expirationDate: string;
   status: PolicyStatus;
+  cancellationDate?: string;
   aggregateCoverageLimit: number;
   perOccurrenceLimit: number;
   deductible: number;

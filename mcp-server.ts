@@ -52,6 +52,18 @@ server.tool(
     }
 
     const targetDate = new Date(`${asOfDate}T23:59:59Z`).getTime();
+    if (Number.isNaN(targetDate)) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `Invalid asOfDate "${asOfDate}". Please supply a valid ISO date in YYYY-MM-DD format.`,
+          },
+        ],
+      };
+    }
+
     const inceptionDate = new Date(`${policy.effectiveDate}T00:00:00Z`).getTime();
     const expirationDate = new Date(`${policy.expirationDate}T00:00:00Z`).getTime();
 
@@ -74,11 +86,40 @@ server.tool(
     // Pro-rata earned vs unearned calculation
     const totalTermMs = Math.max(1, expirationDate - inceptionDate);
     const elapsedMs = Math.min(Math.max(0, targetDate - inceptionDate), totalTermMs);
-    const earnedFraction = elapsedMs / totalTermMs;
+
+    // Base policy earned premium
+    const baseEarnedFraction = wasIssued ? elapsedMs / totalTermMs : 0;
+    const basePremiumCents = dollarsToCents(policy.writtenPremium);
+    let earnedPremiumCents = Math.round(basePremiumCents * baseEarnedFraction);
+
+    // Each endorsement's premium is earned strictly for elapsed coverage since its own effective date
+    for (const end of activeEndorsements) {
+      const endEffTime = new Date(`${end.effectiveDate}T00:00:00Z`).getTime();
+      const endTermMs = Math.max(1, expirationDate - endEffTime);
+      const endElapsedMs = Math.min(Math.max(0, targetDate - endEffTime), endTermMs);
+      const endEarnedFraction = endElapsedMs / endTermMs;
+      const endDeltaCents = dollarsToCents(end.premiumDelta);
+      earnedPremiumCents += Math.round(endDeltaCents * endEarnedFraction);
+    }
 
     const totalPremiumCents = dollarsToCents(adjustedWrittenPremium);
-    const earnedPremiumCents = Math.round(totalPremiumCents * earnedFraction);
     const unearnedPremiumCents = Math.max(0, totalPremiumCents - earnedPremiumCents);
+
+    // Derive policy status as of the requested date (pre-cancellation vs cancelled)
+    let statusAsOfDate = policy.status;
+    if (!wasIssued) {
+      statusAsOfDate = 'NOT_YET_INCEPTED' as any;
+    } else if (isExpiredAsOf) {
+      statusAsOfDate = 'EXPIRED' as any;
+    } else if (policy.status === 'Cancelled' || policy.cancellationDate) {
+      const cancelDate = policy.cancellationDate || policy.updatedAt.slice(0, 10);
+      const cancelTime = new Date(`${cancelDate}T00:00:00Z`).getTime();
+      if (!Number.isNaN(cancelTime) && targetDate < cancelTime) {
+        statusAsOfDate = 'Active';
+      } else {
+        statusAsOfDate = 'Cancelled';
+      }
+    }
 
     const snapshot = {
       policyId: policy.id,
@@ -90,11 +131,7 @@ server.tool(
         ein: policy.customerEin,
       },
       lineOfBusiness: policy.lineOfBusiness,
-      statusAsOfDate: !wasIssued
-        ? 'NOT_YET_INCEPTED'
-        : isExpiredAsOf
-        ? 'EXPIRED'
-        : policy.status,
+      statusAsOfDate,
       term: {
         effectiveDate: policy.effectiveDate,
         expirationDate: policy.expirationDate,

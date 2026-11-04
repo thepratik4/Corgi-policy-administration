@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getDbState, resetDatabaseToSeed } from '../lib/serverDatabase';
 import { dollarsToCents, centsToDollars } from '../utils/financialRules';
+import { reconstructPolicyAsOfDate } from '../utils/documentGenerator';
 
 test('MCP Tool Logic: get_policy_as_of reconstructs historical coverage and earned premium', () => {
   resetDatabaseToSeed();
@@ -82,4 +83,36 @@ test('MCP Tool Logic: request_endorsement_or_reserve_adjustment queues strictly 
   const updatedPendingCount = state.approvalRequests.filter((a) => a.status === 'Pending').length;
   assert.equal(updatedPendingCount, initialPendingCount + 1, 'Approval request must be in pending queue');
 });
+
+test('reconstructPolicyAsOfDate: validates NaN date and derives historical status and per-endorsement earnings', () => {
+  resetDatabaseToSeed();
+  const state = getDbState();
+  const cancelledPolicy = state.policies.find((p) => p.status === 'Cancelled');
+  assert.ok(cancelledPolicy, 'Seed should contain a cancelled policy');
+
+  // 1. Invalid date throws
+  assert.throws(() => reconstructPolicyAsOfDate(cancelledPolicy, 'invalid-date'), /Invalid asOfDate/);
+
+  // 2. Pre-cancellation status is Active
+  const preCancelRecon = reconstructPolicyAsOfDate(cancelledPolicy, '2026-05-01');
+  assert.equal(preCancelRecon.statusAsOfDate, 'Active', 'Policy prior to cancellation date should be Active');
+
+  // 3. Post-cancellation status is Cancelled
+  const postCancelRecon = reconstructPolicyAsOfDate(cancelledPolicy, '2026-07-01');
+  assert.equal(postCancelRecon.statusAsOfDate, 'Cancelled', 'Policy after cancellation date should be Cancelled');
+
+  // 4. Per-endorsement earned premium and effective date filtering
+  const policyWithEndorsement = state.policies.find((p) => p.endorsements && p.endorsements.length > 0);
+  if (policyWithEndorsement) {
+    // Before endorsement effective date (2026-07-15)
+    const beforeRecon = reconstructPolicyAsOfDate(policyWithEndorsement, '2026-06-30');
+    assert.equal(beforeRecon.activeEndorsements.length, 0, 'Endorsement should not be active prior to its effective date');
+
+    // After endorsement effective date
+    const afterRecon = reconstructPolicyAsOfDate(policyWithEndorsement, '2026-08-01');
+    assert.ok(afterRecon.activeEndorsements.length > 0, 'Active endorsements should be included after effective date');
+    assert.ok(dollarsToCents(afterRecon.earnedPremium) <= dollarsToCents(afterRecon.adjustedWrittenPremium), 'Earned cannot exceed adjusted total');
+  }
+});
+
 
