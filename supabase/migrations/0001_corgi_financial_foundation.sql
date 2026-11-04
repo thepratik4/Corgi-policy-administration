@@ -1,40 +1,9 @@
 -- Corgi Track 1 Policy Administration — Supabase PostgreSQL Foundation Migration
--- Idempotent, immutable append-only financial subledger with integer USD cents precision.
+-- Immutable append-only financial subledger with integer USD cents precision.
+-- Note: Destructive teardown (DROP TABLE/TYPE CASCADE) is omitted so rerunning
+-- against existing objects fails safely without deleting populated financial data.
 
--- 1. Teardown in reverse dependency order for clean re-runs in Supabase SQL Editor
--- (Note: DROP TABLE ... CASCADE automatically drops any triggers on the tables)
-DROP FUNCTION IF EXISTS enforce_balanced_journal_entry() CASCADE;
-DROP FUNCTION IF EXISTS prevent_posted_journal_mutation() CASCADE;
-
-DROP TABLE IF EXISTS corgi_system_state CASCADE;
-DROP TABLE IF EXISTS reconciliation_items CASCADE;
-DROP TABLE IF EXISTS reserve_adjustments CASCADE;
-DROP TABLE IF EXISTS claims CASCADE;
-DROP TABLE IF EXISTS approval_requests CASCADE;
-DROP TABLE IF EXISTS audit_logs CASCADE;
-DROP TABLE IF EXISTS webhook_events CASCADE;
-DROP TABLE IF EXISTS journal_lines CASCADE;
-DROP TABLE IF EXISTS journal_entries CASCADE;
-DROP TABLE IF EXISTS ledger_accounts CASCADE;
-DROP TABLE IF EXISTS payments CASCADE;
-DROP TABLE IF EXISTS policy_coverages CASCADE;
-DROP TABLE IF EXISTS policies CASCADE;
-DROP TABLE IF EXISTS customers CASCADE;
-DROP TABLE IF EXISTS brokers CASCADE;
-DROP TABLE IF EXISTS users CASCADE;
-
-DROP TYPE IF EXISTS approval_status CASCADE;
-DROP TYPE IF EXISTS journal_status CASCADE;
-DROP TYPE IF EXISTS normal_balance CASCADE;
-DROP TYPE IF EXISTS account_category CASCADE;
-DROP TYPE IF EXISTS payment_status CASCADE;
-DROP TYPE IF EXISTS policy_status CASCADE;
-DROP TYPE IF EXISTS kyb_status CASCADE;
-DROP TYPE IF EXISTS user_role CASCADE;
-DROP TYPE IF EXISTS claim_status CASCADE;
-DROP TYPE IF EXISTS payout_status CASCADE;
-
--- 2. Domain Enums
+-- 1. Domain Enums
 CREATE TYPE user_role AS ENUM ('OPERATIONS_ADMIN', 'FINANCE_APPROVER');
 CREATE TYPE kyb_status AS ENUM ('Approved', 'Pending', 'Failed');
 CREATE TYPE policy_status AS ENUM ('Draft', 'Pending', 'Active', 'Cancelled', 'Expired');
@@ -46,7 +15,7 @@ CREATE TYPE approval_status AS ENUM ('Pending', 'Approved', 'Rejected');
 CREATE TYPE claim_status AS ENUM ('Open', 'Under Review', 'Approved', 'Settled', 'Denied');
 CREATE TYPE payout_status AS ENUM ('Unpaid', 'Pending Approval', 'Partially Paid', 'Paid in Full', 'Hold');
 
--- 3. Core Relational Tables
+-- 2. Core Relational Tables
 CREATE TABLE users (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   supabase_uid TEXT UNIQUE,
@@ -305,7 +274,7 @@ CREATE TABLE corgi_system_state (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 4. Append-Only Immutability Trigger
+-- 3. Append-Only Immutability Trigger
 CREATE OR REPLACE FUNCTION prevent_posted_journal_mutation()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -320,8 +289,12 @@ BEGIN
   IF TG_TABLE_NAME = 'journal_entries' AND TG_OP = 'UPDATE' THEN
     IF OLD.journal_number <> NEW.journal_number
        OR OLD.effective_date <> NEW.effective_date
+       OR OLD.recorded_at <> NEW.recorded_at
        OR OLD.reference <> NEW.reference
-       OR (OLD.reversed_by_entry_id IS NOT NULL AND OLD.reversed_by_entry_id <> NEW.reversed_by_entry_id) THEN
+       OR OLD.memo <> NEW.memo
+       OR OLD.posted_by_email <> NEW.posted_by_email
+       OR (OLD.reversed_by_entry_id IS NOT NULL AND OLD.reversed_by_entry_id <> NEW.reversed_by_entry_id)
+       OR (OLD.reversed_by_journal_number IS NOT NULL AND OLD.reversed_by_journal_number <> NEW.reversed_by_journal_number) THEN
       RAISE EXCEPTION 'Immutable Ledger Violation: Posted journal entry fields are immutable.';
     END IF;
   END IF;
@@ -338,7 +311,7 @@ CREATE TRIGGER trg_immutable_journal_lines
 BEFORE UPDATE OR DELETE ON journal_lines
 FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation();
 
--- 5. Deferred Constraint Trigger: Verify balanced double-entry lines on journal_lines at COMMIT
+-- 4. Deferred Constraint Trigger: Verify balanced double-entry lines on journal_lines at COMMIT
 CREATE OR REPLACE FUNCTION enforce_balanced_journal_entry()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -373,7 +346,7 @@ AFTER INSERT OR UPDATE ON journal_lines
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION enforce_balanced_journal_entry();
 
--- 6. Chart of Accounts Baseline Data
+-- 5. Chart of Accounts Baseline Data
 INSERT INTO ledger_accounts (code, name, category, normal_balance, description) VALUES
 ('1010', 'Cash & Stripe Settlement Clearing', 'Asset', 'Debit', 'Real-time settlement clearing for card, ACH, and wire collections via Stripe test/live mode.'),
 ('1100', 'Premium Accounts Receivable', 'Asset', 'Debit', 'Amounts invoiced to commercial policyholders pending electronic settlement or broker remittance.'),
@@ -386,13 +359,48 @@ INSERT INTO ledger_accounts (code, name, category, normal_balance, description) 
 ('5020', 'Broker Commission Expense', 'Expense', 'Debit', 'Acquisition costs incurred from distributor commissions based on agreed basis points.')
 ON CONFLICT (code) DO NOTHING;
 
--- 7. Demo Users Baseline Data
+-- 6. Demo Users Baseline Data
 INSERT INTO users (id, email, full_name, role, role_label, department, avatar_initials) VALUES
 ('usr-ops-01', 'alex.rivera@corgi.insure', 'Alex Rivera', 'OPERATIONS_ADMIN', 'Operations Admin', 'Commercial Policy Operations', 'AR'),
 ('usr-fin-02', 'sarah.chen@corgi.insure', 'Sarah Chen, CPA', 'FINANCE_APPROVER', 'Finance Approver', 'Controllership & Treasury', 'SC')
 ON CONFLICT (email) DO NOTHING;
 
--- 8. Row Level Security (RLS) Configuration
+-- 7. Access Control and Row Level Security (RLS)
+-- Establish least-privilege access model:
+--   service_role: Full administrative access for server-side policy administration and subledger processing.
+--   authenticated: Read-only access to operational domain and financial reporting tables.
+--   anon: All access revoked; public traffic cannot read or mutate financial records.
+
+-- 7a. Revoke broad public permissions
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated;
+REVOKE ALL ON ALL ROUTINES IN SCHEMA public FROM anon, authenticated;
+
+-- 7b. Grant service_role full administrative access
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO service_role;
+
+-- 7c. Grant authenticated users read-only access to operational domain and reporting tables
+GRANT SELECT ON TABLE
+  users,
+  brokers,
+  customers,
+  policies,
+  policy_coverages,
+  payments,
+  claims,
+  reserve_adjustments,
+  ledger_accounts,
+  journal_entries,
+  journal_lines,
+  webhook_events,
+  audit_logs,
+  approval_requests,
+  reconciliation_items
+TO authenticated;
+
+-- 7d. Enable Row Level Security (RLS) on all tables
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE brokers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
@@ -410,14 +418,40 @@ ALTER TABLE approval_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reconciliation_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corgi_system_state ENABLE ROW LEVEL SECURITY;
 
+-- 7e. Least-privilege RLS policies
 DO $$
 DECLARE
   tbl text;
+  domain_tables text[] := ARRAY[
+    'users',
+    'brokers',
+    'customers',
+    'policies',
+    'policy_coverages',
+    'payments',
+    'claims',
+    'reserve_adjustments',
+    'ledger_accounts',
+    'journal_entries',
+    'journal_lines',
+    'webhook_events',
+    'audit_logs',
+    'approval_requests',
+    'reconciliation_items'
+  ];
 BEGIN
-  FOR tbl IN
-    SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+  FOREACH tbl IN ARRAY domain_tables
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS "allow_all_%s" ON %I;', tbl, tbl);
-    EXECUTE format('CREATE POLICY "allow_all_%s" ON %I FOR ALL USING (true) WITH CHECK (true);', tbl, tbl);
+    EXECUTE format('DROP POLICY IF EXISTS "service_role_all_%s" ON %I;', tbl, tbl);
+    EXECUTE format('DROP POLICY IF EXISTS "authenticated_select_%s" ON %I;', tbl, tbl);
+
+    EXECUTE format('CREATE POLICY "service_role_all_%s" ON %I FOR ALL TO service_role USING (true) WITH CHECK (true);', tbl, tbl);
+    EXECUTE format('CREATE POLICY "authenticated_select_%s" ON %I FOR SELECT TO authenticated USING (true);', tbl, tbl);
   END LOOP;
+
+  -- corgi_system_state: isolated strictly to service_role
+  EXECUTE 'DROP POLICY IF EXISTS "allow_all_corgi_system_state" ON corgi_system_state;';
+  EXECUTE 'DROP POLICY IF EXISTS "service_role_all_corgi_system_state" ON corgi_system_state;';
+  EXECUTE 'CREATE POLICY "service_role_all_corgi_system_state" ON corgi_system_state FOR ALL TO service_role USING (true) WITH CHECK (true);';
 END $$;
