@@ -4,8 +4,19 @@ import React, { useState } from 'react';
 import { usePolicyAdmin } from '../../services/policyAdminStore';
 import { Eye, EyeOff, ShieldCheck, UserCheck, Lock, ArrowRight } from 'lucide-react';
 
+const DEMO_CREDENTIALS: Record<string, { password: string; role: 'OPERATIONS_ADMIN' | 'FINANCE_APPROVER' }> = {
+  'alex.rivera@corgi.insure': {
+    password: 'corgi-ops-sandbox-2026',
+    role: 'OPERATIONS_ADMIN',
+  },
+  'sarah.chen@corgi.insure': {
+    password: 'corgi-fin-approver-2026',
+    role: 'FINANCE_APPROVER',
+  },
+};
+
 export function LoginView() {
-  const { loginAsRole, loginWithEmail } = usePolicyAdmin();
+  const { loginAsRole } = usePolicyAdmin();
   const [email, setEmail] = useState('alex.rivera@corgi.insure');
   const [password, setPassword] = useState('corgi-ops-sandbox-2026');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,12 +26,22 @@ export function LoginView() {
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password.trim()) {
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedEmail || !trimmedPassword) {
       setError('Please enter both your Corgi work email and password.');
       return;
     }
+
+    const matched = DEMO_CREDENTIALS[trimmedEmail];
+    if (!matched || matched.password !== trimmedPassword) {
+      setError('Invalid email or password. Please use the valid demo credentials provided below.');
+      return;
+    }
+
     setError('');
-    loginWithEmail(email, selectedRolePreset);
+    loginAsRole(matched.role);
   };
 
   const handleSelectDemoPreset = (role: 'OPERATIONS_ADMIN' | 'FINANCE_APPROVER') => {
@@ -203,6 +224,9 @@ export function LoginView() {
                   <p className="text-xs text-slate-600 mt-1 font-mono">
                     alex.rivera@corgi.insure
                   </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Password: <code className="text-slate-700 bg-slate-100 px-1 py-0.2 rounded font-mono text-[10px]">corgi-ops-sandbox-2026</code>
+                  </p>
                   <p className="text-[11px] text-slate-500 mt-1">
                     Issue policies, bind endorsements, open claims, initiate refunds
                   </p>
@@ -224,6 +248,9 @@ export function LoginView() {
                   </div>
                   <p className="text-xs text-slate-600 mt-1 font-mono">
                     sarah.chen@corgi.insure
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Password: <code className="text-slate-700 bg-slate-100 px-1 py-0.2 rounded font-mono text-[10px]">corgi-fin-approver-2026</code>
                   </p>
                   <p className="text-[11px] text-slate-500 mt-1">
                     Approve queue requests, reverse/rebook ledger entries, resolve breaks
