@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getDbState, resetDatabaseToSeed } from '../lib/serverDatabase';
 import { dollarsToCents, centsToDollars } from '../utils/financialRules';
-import { reconstructPolicyAsOfDate } from '../utils/documentGenerator';
+import { reconstructPolicyAsOfDate, generateDeclarationsPageHtml } from '../utils/documentGenerator';
 
 test('MCP Tool Logic: get_policy_as_of reconstructs historical coverage and earned premium', () => {
   resetDatabaseToSeed();
@@ -122,6 +122,23 @@ test('reconstructPolicyAsOfDate: validates NaN date and derives historical statu
     assert.ok(afterRecon.activeEndorsements.length > 0, 'Active endorsements should be included after effective date');
     assert.ok(dollarsToCents(afterRecon.earnedPremium) <= dollarsToCents(afterRecon.adjustedWrittenPremium), 'Earned cannot exceed adjusted total');
   }
+});
+
+test('generateDeclarationsPageHtml: renders coverages by line of business and formats amounts with cents', () => {
+  const state = getDbState();
+  const cglPolicy = state.policies.find((p) => p.lineOfBusiness === 'Commercial General Liability');
+  const cyberPolicy = state.policies.find((p) => p.lineOfBusiness === 'Cyber & Tech E&O');
+
+  assert.ok(cglPolicy, 'CGL policy should exist');
+  assert.ok(cyberPolicy, 'Cyber policy should exist');
+
+  const cglHtml = generateDeclarationsPageHtml(cglPolicy, '2026-05-01');
+  assert.ok(cglHtml.includes('General Aggregate Limit'), 'CGL HTML should include CGL limits');
+  assert.ok(cglHtml.includes('.00'), 'CGL HTML should retain cents formatting');
+
+  const cyberHtml = generateDeclarationsPageHtml(cyberPolicy, '2026-05-01');
+  assert.ok(cyberHtml.includes('Coverage & Limits Schedule (Cyber &amp; Tech E&amp;O)') || cyberHtml.includes('Cyber & Tech E&O'), 'Cyber HTML should reflect Cyber line of business');
+  assert.ok(cyberHtml.includes('.00'), 'Cyber HTML should retain cents formatting');
 });
 
 

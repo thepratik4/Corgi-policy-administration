@@ -80,6 +80,57 @@ export function reconstructPolicyAsOfDate(policy: Policy, asOfDate: string) {
   };
 }
 
+function getLineOfBusinessLimitLabels(lineOfBusiness: Policy['lineOfBusiness']) {
+  switch (lineOfBusiness) {
+    case 'Commercial General Liability':
+      return {
+        aggregateLabel: 'General Aggregate Limit (Other than Products-Completed Ops)',
+        occurrenceLabel: 'Each Occurrence Limit',
+        deductibleLabel: 'Property Damage & Bodily Injury Deductible',
+        aggregateBasis: 'Per Policy Annual Term',
+        occurrenceBasis: 'Per Loss Incident',
+        deductibleBasis: 'Per Claim Retention',
+      };
+    case 'Cyber & Tech E&O':
+      return {
+        aggregateLabel: 'Policy Aggregate Policy Limit (Network & E&O)',
+        occurrenceLabel: 'Each Claim / Wrongful Act Limit',
+        deductibleLabel: 'Retention Per Security / Privacy Incident',
+        aggregateBasis: 'Per Policy Annual Term',
+        occurrenceBasis: 'Per Claim Incident',
+        deductibleBasis: 'Self-Insured Retention (SIR)',
+      };
+    case 'Commercial Property':
+      return {
+        aggregateLabel: 'Total Insurable Blanket Limit (Building & BPP)',
+        occurrenceLabel: 'Per Occurrence / Location Limit',
+        deductibleLabel: 'Property Loss Deductible',
+        aggregateBasis: 'Per Policy Annual Term',
+        occurrenceBasis: 'Per Occurrence Loss',
+        deductibleBasis: 'Per Location Retention',
+      };
+    case 'Workers Compensation':
+      return {
+        aggregateLabel: 'Policy Limit (Disease / Bodily Injury)',
+        occurrenceLabel: 'Each Accident Limit',
+        deductibleLabel: 'Statutory Employer Retention',
+        aggregateBasis: 'Statutory Annual Term',
+        occurrenceBasis: 'Per Workplace Incident',
+        deductibleBasis: 'Per Occurrence Retention',
+      };
+    case 'Directors & Officers':
+    default:
+      return {
+        aggregateLabel: 'Aggregate Maximum Limit of Liability',
+        occurrenceLabel: 'Each Claim / Executive Liability Limit',
+        deductibleLabel: 'Company Reimbursement / Retention',
+        aggregateBasis: 'Per Policy Annual Term',
+        occurrenceBasis: 'Per Wrongful Act Claim',
+        deductibleBasis: 'Corporate Retention',
+      };
+  }
+}
+
 /**
  * Generates an authentic, high-fidelity Commercial Policy Declarations Page HTML
  * formatted for print and PDF export.
@@ -93,6 +144,7 @@ export function generateDeclarationsPageHtml(
   const stateTax = Math.round(recon.adjustedWrittenPremium * 0.035 * 100) / 100;
   const stampingFee = 25.0;
   const totalInvoice = recon.adjustedWrittenPremium + stateTax + stampingFee;
+  const limitLabels = getLineOfBusinessLimitLabels(policy.lineOfBusiness);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -160,7 +212,7 @@ export function generateDeclarationsPageHtml(
     </div>
   </div>
 
-  <div style="font-weight: 700; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; color: #334155;">Coverage & Limits Schedule</div>
+  <div style="font-weight: 700; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; color: #334155;">Coverage & Limits Schedule (${policy.lineOfBusiness})</div>
   <table>
     <thead>
       <tr>
@@ -170,20 +222,33 @@ export function generateDeclarationsPageHtml(
       </tr>
     </thead>
     <tbody>
-      <tr>
-        <td><strong>General Aggregate Limit</strong> (Other than Products-Completed Ops)</td>
-        <td>Per Policy Annual Term</td>
-        <td class="num font-bold">${formatCurrency(policy.aggregateCoverageLimit)}</td>
+      ${
+        policy.coverages && policy.coverages.length > 0
+          ? policy.coverages
+              .map(
+                (cov) => `<tr>
+                  <td><strong>${cov.name}</strong> <span style="font-family: ui-monospace, monospace; font-size: 9px; color: #64748B;">[${cov.code}]</span></td>
+                  <td>Deductible: ${formatCurrency(cov.deductible, true)} · Basis: Policy Term</td>
+                  <td class="num font-bold">${formatCurrency(cov.limit, true)}</td>
+                </tr>`
+              )
+              .join('')
+          : ''
+      }
+      <tr style="background: #F8FAFC; border-top: ${policy.coverages && policy.coverages.length > 0 ? '2px solid #CBD5E1' : 'none'};">
+        <td><strong>${limitLabels.aggregateLabel}</strong></td>
+        <td>${limitLabels.aggregateBasis}</td>
+        <td class="num font-bold">${formatCurrency(policy.aggregateCoverageLimit, true)}</td>
       </tr>
-      <tr>
-        <td><strong>Each Occurrence Limit</strong></td>
-        <td>Per Loss Incident</td>
-        <td class="num">${formatCurrency(policy.perOccurrenceLimit)}</td>
+      <tr style="background: #F8FAFC;">
+        <td><strong>${limitLabels.occurrenceLabel}</strong></td>
+        <td>${limitLabels.occurrenceBasis}</td>
+        <td class="num">${formatCurrency(policy.perOccurrenceLimit, true)}</td>
       </tr>
-      <tr>
-        <td><strong>Property Damage / Bodily Injury Deductible</strong></td>
-        <td>Per Claim Retention</td>
-        <td class="num">${formatCurrency(policy.deductible)}</td>
+      <tr style="background: #F8FAFC;">
+        <td><strong>${limitLabels.deductibleLabel}</strong></td>
+        <td>${limitLabels.deductibleBasis}</td>
+        <td class="num">${formatCurrency(policy.deductible, true)}</td>
       </tr>
     </tbody>
   </table>
@@ -208,7 +273,7 @@ export function generateDeclarationsPageHtml(
                   <td class="mono font-semibold">${e.id}</td>
                   <td class="mono">${e.effectiveDate}</td>
                   <td>${e.description}</td>
-                  <td class="num" style="color: ${e.premiumDelta >= 0 ? '#0F172A' : '#DC2626'}">${e.premiumDelta >= 0 ? '+' : ''}${formatCurrency(e.premiumDelta)}</td>
+                  <td class="num" style="color: ${e.premiumDelta >= 0 ? '#0F172A' : '#DC2626'}">${e.premiumDelta >= 0 ? '+' : ''}${formatCurrency(e.premiumDelta, true)}</td>
                 </tr>`
               )
               .join('')
@@ -229,32 +294,32 @@ export function generateDeclarationsPageHtml(
       <tr>
         <td>Base Written Premium</td>
         <td class="mono">Account 2010 (Unearned Premium) / 4010 (Earned)</td>
-        <td class="num">${formatCurrency(policy.writtenPremium)}</td>
+        <td class="num">${formatCurrency(policy.writtenPremium, true)}</td>
       </tr>
       <tr>
         <td>Net Endorsement Adjustments</td>
         <td class="mono">Schedule Delta Active as of ${asOfDate}</td>
-        <td class="num">${formatCurrency(recon.adjustedWrittenPremium - policy.writtenPremium)}</td>
+        <td class="num">${formatCurrency(recon.adjustedWrittenPremium - policy.writtenPremium, true)}</td>
       </tr>
       <tr>
         <td><strong>Adjusted Annual Written Premium</strong></td>
         <td class="mono">Subledger Binding Total</td>
-        <td class="num font-bold">${formatCurrency(recon.adjustedWrittenPremium)}</td>
+        <td class="num font-bold">${formatCurrency(recon.adjustedWrittenPremium, true)}</td>
       </tr>
       <tr>
         <td>State Surplus Lines Premium Tax (3.5%)</td>
         <td class="mono">Account 2050 (State Tax Payable - Non-Premium Fiduciary)</td>
-        <td class="num">${formatCurrency(stateTax)}</td>
+        <td class="num">${formatCurrency(stateTax, true)}</td>
       </tr>
       <tr>
         <td>Statutory Stamping Fee</td>
         <td class="mono">Account 2060 (Regulatory Stamping Fee - Flat Non-Refundable)</td>
-        <td class="num">${formatCurrency(stampingFee)}</td>
+        <td class="num">${formatCurrency(stampingFee, true)}</td>
       </tr>
       <tr class="total-row">
         <td>TOTAL STATUTORY BILLING</td>
         <td>Gross Policyholder Invoiced Charge</td>
-        <td class="num font-bold">${formatCurrency(totalInvoice)}</td>
+        <td class="num font-bold">${formatCurrency(totalInvoice, true)}</td>
       </tr>
     </tbody>
   </table>
@@ -264,11 +329,11 @@ export function generateDeclarationsPageHtml(
     <div class="grid" style="margin: 0; gap: 8px;">
       <div>
         <div class="card-row"><span class="label">Days Elapsed:</span><span class="val mono">${recon.daysElapsed} of ${recon.totalTermDays} days</span></div>
-        <div class="card-row"><span class="label">Earned Premium (Revenue):</span><span class="val mono font-bold" style="color: #166534;">${formatCurrency(recon.earnedPremium)}</span></div>
+        <div class="card-row"><span class="label">Earned Premium (Revenue):</span><span class="val mono font-bold" style="color: #166534;">${formatCurrency(recon.earnedPremium, true)}</span></div>
       </div>
       <div>
         <div class="card-row"><span class="label">Earning Rate:</span><span class="val mono">${((recon.daysElapsed / recon.totalTermDays) * 100).toFixed(1)}%</span></div>
-        <div class="card-row"><span class="label">Unearned Premium (Liability):</span><span class="val mono font-bold" style="color: #9A3412;">${formatCurrency(recon.unearnedPremium)}</span></div>
+        <div class="card-row"><span class="label">Unearned Premium (Liability):</span><span class="val mono font-bold" style="color: #9A3412;">${formatCurrency(recon.unearnedPremium, true)}</span></div>
       </div>
     </div>
   </div>
@@ -296,8 +361,10 @@ export function printHtmlDocument(title: string, htmlContent: string): void {
   printWindow.document.open();
   printWindow.document.write(htmlContent);
   printWindow.document.close();
+  printWindow.document.title = title;
 
   printWindow.onload = () => {
+    printWindow.document.title = title;
     printWindow.focus();
     printWindow.print();
   };
