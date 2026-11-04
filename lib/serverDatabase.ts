@@ -424,6 +424,7 @@ export function issuePolicyInDb(params: {
       effectiveDate: params.effectiveDate,
       expirationDate: params.expirationDate,
       status: 'Active',
+      bindDate: params.effectiveDate,
       aggregateCoverageLimit: centsToDollars(aggregateLimitCents),
       perOccurrenceLimit: centsToDollars(occurrenceLimitCents),
       deductible: centsToDollars(deductibleCents),

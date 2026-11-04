@@ -56,6 +56,14 @@ test('MCP Tool Logic: get_broker_statement ties commission and clawbacks to the 
   const grossPremium = policies.reduce((s, p) => s + p.writtenPremium, 0);
   const grossCommission = Math.round(grossPremium * broker.commissionRate);
   assert.ok(grossCommission > 0, 'Commission must be positive');
+
+  const monthIso = '2026-03';
+  const boundPoliciesInMonth = policies.filter((p) => {
+    if (p.status === 'Draft' || p.status === 'Pending') return false;
+    const policyBindDate = p.bindDate || p.effectiveDate;
+    return policyBindDate.startsWith(monthIso);
+  });
+  assert.ok(boundPoliciesInMonth.every((p) => p.status !== 'Draft' && p.status !== 'Pending'), 'Excludes draft and pending policies');
 });
 
 test('MCP Tool Logic: request_endorsement_or_reserve_adjustment queues strictly to human Finance Approver', () => {
@@ -90,8 +98,9 @@ test('reconstructPolicyAsOfDate: validates NaN date and derives historical statu
   const cancelledPolicy = state.policies.find((p) => p.status === 'Cancelled');
   assert.ok(cancelledPolicy, 'Seed should contain a cancelled policy');
 
-  // 1. Invalid date throws
+  // 1. Invalid or empty date throws
   assert.throws(() => reconstructPolicyAsOfDate(cancelledPolicy, 'invalid-date'), /Invalid asOfDate/);
+  assert.throws(() => reconstructPolicyAsOfDate(cancelledPolicy, ''), /Invalid asOfDate/);
 
   // 2. Pre-cancellation status is Active
   const preCancelRecon = reconstructPolicyAsOfDate(cancelledPolicy, '2026-05-01');

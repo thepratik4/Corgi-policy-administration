@@ -98,12 +98,32 @@ export function PoliciesView() {
   );
 
   const policyAsOfRecon = useMemo(() => {
-    if (!selectedPolicy) return null;
-    return reconstructPolicyAsOfDate(selectedPolicy, policyAsOfDate);
+    if (!selectedPolicy || !policyAsOfDate) return null;
+    const targetTime = new Date(`${policyAsOfDate}T00:00:00Z`).getTime();
+    if (Number.isNaN(targetTime)) return null;
+    try {
+      return reconstructPolicyAsOfDate(selectedPolicy, policyAsOfDate);
+    } catch {
+      return null;
+    }
   }, [selectedPolicy, policyAsOfDate]);
 
   const handlePrintSelectedPolicyAsOf = () => {
-    if (!selectedPolicy) return;
+    if (!selectedPolicy || !policyAsOfDate) return;
+
+    const targetTime = new Date(`${policyAsOfDate}T00:00:00Z`).getTime();
+    const effTime = new Date(`${selectedPolicy.effectiveDate}T00:00:00Z`).getTime();
+    const expTime = new Date(`${selectedPolicy.expirationDate}T00:00:00Z`).getTime();
+
+    if (Number.isNaN(targetTime) || targetTime < effTime || targetTime > expTime) {
+      addToast({
+        title: 'Invalid As-Of Date',
+        description: `As-of date must fall within the policy term (${selectedPolicy.effectiveDate} to ${selectedPolicy.expirationDate}).`,
+        variant: 'error',
+      });
+      return;
+    }
+
     const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
     const html = generateDeclarationsPageHtml(selectedPolicy, policyAsOfDate, broker);
     printHtmlDocument(
@@ -272,7 +292,12 @@ export function PoliciesView() {
               {selectedPolicy.status !== 'Draft' && selectedPolicy.status !== 'Pending' && (
                 <button
                   type="button"
-                  onClick={() => setAsOfDecModalOpen(true)}
+                  onClick={() => {
+                    if (selectedPolicy?.effectiveDate) {
+                      setPolicyAsOfDate(selectedPolicy.effectiveDate);
+                    }
+                    setAsOfDecModalOpen(true);
+                  }}
                   className="px-3.5 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
                 >
                   <Printer className="w-3.5 h-3.5 text-[#EA580C]" />
@@ -834,6 +859,8 @@ export function PoliciesView() {
                     type="date"
                     aria-label="Reconstruction calendar date"
                     value={policyAsOfDate}
+                    min={selectedPolicy.effectiveDate}
+                    max={selectedPolicy.expirationDate}
                     onChange={(e) => setPolicyAsOfDate(e.target.value)}
                     className="font-mono text-xs text-slate-900 font-semibold bg-transparent focus:outline-none"
                   />

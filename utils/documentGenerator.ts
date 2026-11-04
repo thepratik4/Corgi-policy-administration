@@ -7,7 +7,12 @@ import { centsToDollars, dollarsToCents } from './financialRules';
  * as it stood on any past calendar date (Domain Gauntlet #9: As-Of Reconstruction).
  */
 export function reconstructPolicyAsOfDate(policy: Policy, asOfDate: string) {
-  const targetTime = new Date(`${asOfDate}T23:59:59Z`).getTime();
+  const trimmedDate = typeof asOfDate === 'string' ? asOfDate.trim() : '';
+  if (!trimmedDate) {
+    throw new Error('Invalid asOfDate: date string is empty or missing.');
+  }
+
+  const targetTime = new Date(`${trimmedDate}T00:00:00Z`).getTime();
   const inceptionTime = new Date(`${policy.effectiveDate}T00:00:00Z`).getTime();
   const expirationTime = new Date(`${policy.expirationDate}T00:00:00Z`).getTime();
 

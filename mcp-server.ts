@@ -51,7 +51,20 @@ server.tool(
       };
     }
 
-    const targetDate = new Date(`${asOfDate}T23:59:59Z`).getTime();
+    const trimmedDate = typeof asOfDate === 'string' ? asOfDate.trim() : '';
+    if (!trimmedDate) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'asOfDate cannot be empty. Please supply a valid ISO date in YYYY-MM-DD format.',
+          },
+        ],
+      };
+    }
+
+    const targetDate = new Date(`${trimmedDate}T00:00:00Z`).getTime();
     if (Number.isNaN(targetDate)) {
       return {
         isError: true,
@@ -315,6 +328,13 @@ server.tool(
     const brokerPolicies = state.policies.filter((p) => p.brokerId === broker.id);
     const policyNumbers = new Set(brokerPolicies.map((p) => p.policyNumber));
 
+    // Filter policies bound within this billing period (excluding draft and pending)
+    const boundPoliciesInMonth = brokerPolicies.filter((p) => {
+      if (p.status === 'Draft' || p.status === 'Pending') return false;
+      const policyBindDate = p.bindDate || p.effectiveDate;
+      return policyBindDate.startsWith(monthIso);
+    });
+
     // Get payments collected for these policies in the specified month
     const monthPayments = state.payments.filter((pay) => {
       return (
@@ -351,7 +371,7 @@ server.tool(
       },
       billingPeriod: monthIso,
       settlementSummary: {
-        totalPoliciesBound: brokerPolicies.length,
+        totalPoliciesBound: boundPoliciesInMonth.length,
         grossCollectedPremium: centsToDollars(totalCollectedCents),
         cancelledPremiumRefunds: centsToDollars(totalRefundedCents),
         netCollectedPremium: centsToDollars(netCollectedCents),
