@@ -60,7 +60,7 @@ declare global {
   var _corgiDbState: CorgiDatabaseState | undefined;
 }
 
-function createInitialSeedState(): CorgiDatabaseState {
+export function createInitialSeedState(): CorgiDatabaseState {
   const nowIso = '2026-11-04T09:00:00Z';
   const initialWebhookEvents: WebhookEventRecord[] = INITIAL_PAYMENTS.map((pay, idx) => ({
     id: `wh-seed-${idx + 1}`,

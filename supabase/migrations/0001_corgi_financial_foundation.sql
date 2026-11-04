@@ -338,7 +338,42 @@ CREATE TRIGGER trg_immutable_journal_lines
 BEFORE UPDATE OR DELETE ON journal_lines
 FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation();
 
--- 5. Chart of Accounts Baseline Data
+-- 5. Deferred Constraint Trigger: Verify balanced double-entry lines on journal_lines at COMMIT
+CREATE OR REPLACE FUNCTION enforce_balanced_journal_entry()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_entry_id TEXT;
+  v_line_count INTEGER;
+  v_total_debits BIGINT;
+  v_total_credits BIGINT;
+BEGIN
+  v_entry_id := COALESCE(NEW.journal_entry_id, OLD.journal_entry_id);
+
+  SELECT COUNT(*), COALESCE(SUM(debit_cents), 0), COALESCE(SUM(credit_cents), 0)
+  INTO v_line_count, v_total_debits, v_total_credits
+  FROM journal_lines
+  WHERE journal_entry_id = v_entry_id;
+
+  IF v_line_count > 0 THEN
+    IF v_line_count < 2 THEN
+      RAISE EXCEPTION 'Double-Entry Violation: Journal entry % must contain at least 2 lines (found %).', v_entry_id, v_line_count;
+    END IF;
+
+    IF v_total_debits <= 0 OR v_total_debits <> v_total_credits THEN
+      RAISE EXCEPTION 'Double-Entry Violation: Journal entry % is unbalanced (debits=% cents, credits=% cents).', v_entry_id, v_total_debits, v_total_credits;
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER trg_check_journal_entry_balance
+AFTER INSERT OR UPDATE ON journal_lines
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_balanced_journal_entry();
+
+-- 6. Chart of Accounts Baseline Data
 INSERT INTO ledger_accounts (code, name, category, normal_balance, description) VALUES
 ('1010', 'Cash & Stripe Settlement Clearing', 'Asset', 'Debit', 'Real-time settlement clearing for card, ACH, and wire collections via Stripe test/live mode.'),
 ('1100', 'Premium Accounts Receivable', 'Asset', 'Debit', 'Amounts invoiced to commercial policyholders pending electronic settlement or broker remittance.'),
@@ -351,13 +386,13 @@ INSERT INTO ledger_accounts (code, name, category, normal_balance, description) 
 ('5020', 'Broker Commission Expense', 'Expense', 'Debit', 'Acquisition costs incurred from distributor commissions based on agreed basis points.')
 ON CONFLICT (code) DO NOTHING;
 
--- 6. Demo Users Baseline Data
+-- 7. Demo Users Baseline Data
 INSERT INTO users (id, email, full_name, role, role_label, department, avatar_initials) VALUES
 ('usr-ops-01', 'alex.rivera@corgi.insure', 'Alex Rivera', 'OPERATIONS_ADMIN', 'Operations Admin', 'Commercial Policy Operations', 'AR'),
 ('usr-fin-02', 'sarah.chen@corgi.insure', 'Sarah Chen, CPA', 'FINANCE_APPROVER', 'Finance Approver', 'Controllership & Treasury', 'SC')
 ON CONFLICT (email) DO NOTHING;
 
--- 7. Row Level Security (RLS) Configuration
+-- 8. Row Level Security (RLS) Configuration
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE brokers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;

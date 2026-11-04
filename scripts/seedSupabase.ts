@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDbState } from '../lib/serverDatabase';
+import { createInitialSeedState } from '../lib/serverDatabase';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { dollarsToCents } from '../utils/financialRules';
 
@@ -17,7 +17,7 @@ async function main() {
     process.exit(1);
   }
 
-  const state = getDbState();
+  const state = createInitialSeedState();
 
   console.log(`Seeding baseline state into Supabase:
 - ${state.brokers.length} brokers
