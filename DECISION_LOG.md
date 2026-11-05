@@ -101,7 +101,7 @@
   2. `get_broker_statement`: Computes deterministic broker commission statements and clawback reconciliations tied to the ledger.
   3. `query_subledger`: Exposes trial balance, account balances, and journal entries with integer USD cent precision.
   4. `request_endorsement_or_reserve_adjustment` (Write Tool): **Strictly queues into the human Maker-Checker approval table (`approval_requests`)**. It explicitly **does not** post journal entries, update policies, or touch ledger balances.
-- **Defense**: Financial fiduciary compliance forbids autonomous agents from altering subledger rows or releasing cash. All material adjustments (> $500 delta) require two-man human verification (Operations Admin proposes, Finance Approver decides, anti-self-approval enforced).
+- **Defense**: Financial fiduciary compliance forbids autonomous agents from altering subledger rows or releasing cash. Write requests made through the MCP tool (`request_endorsement_or_reserve_adjustment`) are strictly routed to the human Maker-Checker approval queue (`approval_requests`), ensuring agent proposals require human Finance Approver verification. (Direct operator endorsements via REST `PATCH /api/policies` execute directly within standard administrative underwriting authority).
 
 ---
 

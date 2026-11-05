@@ -56,8 +56,8 @@ The platform unifies commercial insurance policy lifecycles with bank-grade fina
    Initiating a PaymentIntent creates a `Pending` record with **zero cash ledger impact**. Cash and revenue clearing are posted strictly upon verified, cryptographically signed webhook delivery (`POST /api/webhooks/stripe` with `payment_intent.succeeded`).
 6. **Webhook Idempotency & Out-of-Order Safety**:
    Incoming webhooks verify the cryptographic `stripe-signature` against the raw request body. Replayed events are deduplicated via `stripe_event_id` and return `200 DUPLICATE_IGNORED` without mutating balances. Out-of-order events auto-synthesize payment records safely.
-7. **Maker-Checker Segregation of Duties**:
-   Policy endorsements or reserve adjustments exceeding \$500 require two-man approval (`approval_requests`). Operations Admins submit proposals; only Finance Approvers can approve or reject. Anti-self-approval is strictly enforced.
+7. **Maker-Checker Segregation of Duties for Agent & High-Risk Actions**:
+   Material reserve adjustments and MCP agent endorsement proposals require two-man approval (`approval_requests`). Operations Admins or MCP agents submit proposals; only authorized Finance Approvers can approve or reject. Anti-self-approval is strictly enforced. (Direct operator endorsements via `PATCH /api/policies` execute directly under administrative underwriting authority).
 8. **Persona Broker KYB Gating**:
    Brokers are tracked with Persona inquiry IDs (`inq_sandbox_...`) and KYB states (`Approved`, `Pending`, `Failed`). Brokers with `Pending` or `Failed` status are hard-blocked from binding policies.
 9. **Taxes & Statutory Fees Isolation**:

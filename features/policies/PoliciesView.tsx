@@ -122,7 +122,8 @@ export function PoliciesView() {
     if (!selectedPolicy || !cession) return;
     const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
     const html = generateReinsuranceCessionNoteHtml(selectedPolicy, broker);
-    printHtmlDocument(`Reinsurance_Cession_${selectedPolicy.policyNumber}`, html);
+    const printed = printHtmlDocument(`Reinsurance_Cession_${selectedPolicy.policyNumber}`, html);
+    if (!printed) return;
     addToast({
       title: 'Reinsurance Cession Note Generated',
       description: `Treaty Schedule printed for ${selectedPolicy.policyNumber} (Munich Re Quota Share).`,
@@ -357,7 +358,12 @@ export function PoliciesView() {
               {selectedPolicy.status !== 'Cancelled' && selectedPolicy.status !== 'Expired' && (
                 <button
                   type="button"
-                  onClick={() => setCancelConfirmOpen(true)}
+                  onClick={() => {
+                    setCancelReason('');
+                    setCancelError('');
+                    setCancelType('PRO_RATA');
+                    setCancelConfirmOpen(true);
+                  }}
                   className="px-3.5 py-2 text-xs font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
                 >
                   <Ban className="w-3.5 h-3.5" />
