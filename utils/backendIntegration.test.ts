@@ -262,6 +262,53 @@ test('decideApprovalInDb: refund approval routes through Stripe provider and pos
   const settlementTxn = updatedState.ledgerTransactions[0];
   assert.equal(settlementTxn.referenceType, 'REVERSAL');
   assert.equal(validateDoubleEntryBalance(settlementTxn.lines).isBalanced, true);
+
+  // Attempting to decide the same request again MUST fail
+  await assert.rejects(
+    async () =>
+      await decideApprovalInDb({
+        requestId: refundReq.id,
+        decision: 'Approved',
+        note: 'Duplicate approval attempt',
+        actor: finUser,
+      }),
+    /already been decided/
+  );
+
+  // Target payment was partially refunded ($3,200 of $64,000), so its status remains 'Succeeded'
+  const targetPayment = updatedState.payments.find((p) => p.id === 'pay-503');
+  assert.ok(targetPayment);
+  assert.equal(targetPayment.status, 'Succeeded');
+  assert.equal(targetPayment.refundedAmount, 3200);
+
+  // Attempting refund approval without a settled payment covering the amount MUST fail
+  const orphanReqId = 'apr-test-orphan';
+  updatedState.approvalRequests.unshift({
+    id: orphanReqId,
+    referenceNumber: 'APR-2026-999',
+    actionType: 'Payment Refund',
+    targetEntityId: 'pol-nonexistent',
+    targetReference: 'CRG-NONEXISTENT',
+    customerName: 'No Payment Corp',
+    amount: 10000,
+    reason: 'Refund for missing policy',
+    initiatorEmail: 'alex.rivera@corgi.insure',
+    initiatorName: 'Alex Rivera',
+    initiatorRole: 'OPERATIONS_ADMIN',
+    createdAt: new Date().toISOString(),
+    status: 'Pending',
+  });
+
+  await assert.rejects(
+    async () =>
+      await decideApprovalInDb({
+        requestId: orphanReqId,
+        decision: 'Approved',
+        note: 'Approval for payment with no settlement',
+        actor: finUser,
+      }),
+    /No settled payment with sufficient refundable balance/
+  );
 });
 
 test('escapeHtml in reinsuranceSchedule escapes HTML entities and tags', () => {

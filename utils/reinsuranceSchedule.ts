@@ -42,6 +42,15 @@ export interface PolicyReinsuranceCession {
   reinsuranceRecoverableAccountName: string;
 }
 
+/**
+ * Computes a policy's prospective reinsurance cession metrics under a quota-share treaty.
+ * Splits written premium, aggregate limits, and per-occurrence limits strictly in integer USD cents
+ * between the direct ceding carrier and the treaty reinsurer.
+ *
+ * @param policy - The target policy to cede.
+ * @param treaty - The reinsurance treaty terms (defaults to Munich Re 25% Quota Share).
+ * @returns Detailed cession breakdown including retained vs ceded premium and limits.
+ */
 export function calculatePolicyReinsuranceCession(
   policy: Policy,
   treaty: ReinsuranceTreaty = ACTIVE_COMMERCIAL_QUOTA_SHARE_TREATY
@@ -80,6 +89,13 @@ export function calculatePolicyReinsuranceCession(
   };
 }
 
+/**
+ * Sanitizes untrusted strings for safe interpolation into HTML documents.
+ * Escapes ampersands, angle brackets, and double/single quotes to prevent HTML/XSS injection.
+ *
+ * @param str - The raw string, number, or nullish value to escape.
+ * @returns The HTML-escaped string safe for document rendering.
+ */
 export function escapeHtml(str: string | number | null | undefined): string {
   if (str === null || str === undefined) return '';
   return String(str)
@@ -90,6 +106,15 @@ export function escapeHtml(str: string | number | null | undefined): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Generates a statutory, print-ready Reinsurance Cession Note (Schedule A) in HTML format.
+ * Interpolates quota-share apportionments, subledger accounting schedules, and escaped entity metadata.
+ *
+ * @param policy - The commercial policy being ceded.
+ * @param broker - The producer of record for the policy (optional).
+ * @param treaty - The quota share treaty configuration.
+ * @returns Complete self-contained HTML document string.
+ */
 export function generateReinsuranceCessionNoteHtml(
   policy: Policy,
   broker?: Broker | null,

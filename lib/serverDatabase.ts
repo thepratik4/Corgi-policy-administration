@@ -62,6 +62,13 @@ declare global {
   var _corgiDbState: CorgiDatabaseState | undefined;
 }
 
+/**
+ * Creates the deterministic baseline state for the Corgi policy administration platform,
+ * including demo users, brokers, policies, payments, claims, append-only subledger entries,
+ * approval requests, and audit logs.
+ *
+ * @returns The initial in-memory database state.
+ */
 export function createInitialSeedState(): CorgiDatabaseState {
   const nowIso = '2026-11-04T09:00:00Z';
   const initialWebhookEvents: WebhookEventRecord[] = INITIAL_PAYMENTS.map((pay, idx) => ({
@@ -124,12 +131,25 @@ export const REQUIRED_STATE_ARRAYS: readonly (keyof CorgiDatabaseState)[] = [
   'auditLogs',
 ] as const;
 
+/**
+ * Type-guard verifying that an object contains all required top-level domain entity arrays
+ * for a valid CorgiDatabaseState.
+ *
+ * @param obj - The unknown object to validate.
+ * @returns True if the object satisfies CorgiDatabaseState shape.
+ */
 export function isValidDatabaseState(obj: unknown): obj is CorgiDatabaseState {
   if (!obj || typeof obj !== 'object') return false;
   const candidate = obj as Record<string, unknown>;
   return REQUIRED_STATE_ARRAYS.every((key) => Array.isArray(candidate[key]));
 }
 
+/**
+ * Retrieves the active in-memory database state, initializing from disk cache or seed state
+ * if not yet populated in the current process runtime.
+ *
+ * @returns The current database state snapshot.
+ */
 export function getDbState(): CorgiDatabaseState {
   if (global._corgiDbState) {
     return global._corgiDbState;
@@ -415,17 +435,28 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
   }
 }
 
+let _transactionMutex: Promise<void> = Promise.resolve();
+
 /**
  * Executes a database mutation inside an atomic snapshot transaction.
- * If an exception is thrown or validation fails, all changes are rolled back.
+ * Transactions are serialized via an async mutex to prevent concurrent mutations
+ * from clobbering state snapshots. If an exception is thrown or validation fails,
+ * all changes are rolled back cleanly.
  */
 export async function runDbTransaction<T>(
   fn: (state: CorgiDatabaseState) => T | Promise<T>
 ): Promise<T> {
-  await hydrateStateFromSupabaseIfAvailable();
-  const current = getDbState();
-  const snapshot = structuredClone(current);
+  const previous = _transactionMutex;
+  let resolveMutex: () => void;
+  _transactionMutex = new Promise<void>((resolve) => {
+    resolveMutex = resolve;
+  });
+
+  await previous;
   try {
+    await hydrateStateFromSupabaseIfAvailable();
+    const current = getDbState();
+    const snapshot = structuredClone(current);
     const result = await fn(snapshot);
     global._corgiDbState = snapshot;
     await persistDbState(snapshot);
@@ -433,6 +464,8 @@ export async function runDbTransaction<T>(
   } catch (err) {
     // Atomic rollback: global._corgiDbState remains untouched
     throw err;
+  } finally {
+    resolveMutex!();
   }
 }
 
@@ -1338,6 +1371,14 @@ export async function createEndorsementInDb(params: {
   });
 }
 
+/**
+ * Cancels an active commercial policy, calculating pro-rata or short-rate refund amounts,
+ * updating policy lifecycle state, and queuing return premium to the Finance Approver queue.
+ * Rejects re-cancellation if the policy is already cancelled.
+ *
+ * @param params - Cancellation parameters including policyId, audit reason, cancellationType, and actor.
+ * @returns The updated cancelled Policy entity.
+ */
 export async function cancelPolicyInDb(params: {
   policyId: string;
   reason: string;
@@ -1405,6 +1446,13 @@ export async function cancelPolicyInDb(params: {
   });
 }
 
+/**
+ * Files a first-notice-of-loss (FNOL) claim against an active commercial policy,
+ * verifying coverage limit constraints and posting an initial double-entry loss reserve entry.
+ *
+ * @param params - Claim details including policyId, lossDate, description, claimedAmount, and initialReserve.
+ * @returns The newly created Claim and associated loss reserve LedgerTransaction.
+ */
 export async function fileClaimInDb(params: {
   policyId: string;
   lossDate: string;
@@ -1494,6 +1542,12 @@ export async function fileClaimInDb(params: {
   });
 }
 
+/**
+ * Adjusts the case loss reserve for an open claim and posts an immutable double-entry journal adjustment.
+ *
+ * @param params - Adjustment details including claimId, newReserveDollars, reason, and actor.
+ * @returns The updated Claim and the balancing LedgerTransaction.
+ */
 export async function adjustClaimReserveInDb(params: {
   claimId: string;
   newReserveDollars: number;
@@ -1578,6 +1632,14 @@ export async function adjustClaimReserveInDb(params: {
   });
 }
 
+/**
+ * Processes a Finance Approver's decision (Approved or Rejected) on a queued financial request.
+ * For approved refunds, routes the disbursement through the payment provider (Stripe), verifies
+ * confirmation, updates payment tracking, and books the balanced settlement reversal journal entry.
+ *
+ * @param params - Approval decision parameters including requestId, decision, note, and actor.
+ * @returns The updated ApprovalRequest entity.
+ */
 export async function decideApprovalInDb(params: {
   requestId: string;
   decision: 'Approved' | 'Rejected';
@@ -1588,6 +1650,9 @@ export async function decideApprovalInDb(params: {
     const req = state.approvalRequests.find((r) => r.id === params.requestId);
     if (!req) {
       throw new Error('Approval request not found.');
+    }
+    if (req.status !== 'Pending') {
+      throw new Error(`Approval request ${req.referenceNumber} has already been decided (${req.status}).`);
     }
 
     const check = canUserDecideApproval(params.actor, req);
@@ -1642,41 +1707,84 @@ export async function decideApprovalInDb(params: {
           : 0;
         const grossUnearnedCents = amountCents + penaltyCents;
 
-        // Locate corresponding payment or paymentIntent for the refund path
-        const targetPayment = state.payments.find(
-          (p) =>
+        // Locate an explicitly settled payment with sufficient remaining refundable amount
+        // Never select a Pending or Failed PaymentIntent
+        const targetPayment = state.payments.find((p) => {
+          if (p.status !== 'Succeeded') return false;
+          const paidCents = dollarsToCents(p.amount);
+          const alreadyRefundedCents = dollarsToCents(p.refundedAmount || 0);
+          const remainingCents = paidCents - alreadyRefundedCents;
+          if (remainingCents < amountCents) return false;
+
+          return (
             p.id === req.targetEntityId ||
             p.stripePaymentIntentId === req.targetEntityId ||
             p.policyId === req.targetEntityId ||
             p.policyNumber === req.targetReference
-        );
+          );
+        });
 
-        const paymentIntentId =
-          targetPayment?.stripePaymentIntentId ||
-          (req.targetEntityId.startsWith('pi_')
-            ? req.targetEntityId
-            : `pi_refund_${req.referenceNumber.toLowerCase()}`);
+        if (!targetPayment) {
+          throw new Error(
+            `No settled payment with sufficient refundable balance found for ${req.targetReference} to refund $${req.amount.toLocaleString()}.`
+          );
+        }
+
+        // Persist a recoverable refund operation in the audit trail before external provider dispatch
+        appendAuditLog(state, {
+          actor: params.actor,
+          action: 'REFUND_DISPATCH_INITIATED',
+          entityType: 'PAYMENT',
+          entityId: targetPayment.id,
+          metadata: {
+            requestId: req.id,
+            referenceNumber: req.referenceNumber,
+            amountCents,
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+          },
+        });
 
         // Submit approved refund to payment provider (Stripe)
         const stripeRefund = await createStripeRefund({
-          paymentIntentId,
+          paymentIntentId: targetPayment.stripePaymentIntentId,
           amountCents,
           reason: req.reason || `Approved ${req.actionType} (${req.referenceNumber})`,
           idempotencyKey: `apr_refund_${req.id}_${amountCents}`,
         });
 
         // Provider confirmation guard: do not record settlement when refund fails or remains unconfirmed
-        if (!stripeRefund || (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending')) {
+        if (
+          !stripeRefund ||
+          (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending') ||
+          stripeRefund.error
+        ) {
+          appendAuditLog(state, {
+            actor: params.actor,
+            action: 'REFUND_DISPATCH_FAILED',
+            entityType: 'PAYMENT',
+            entityId: targetPayment.id,
+            metadata: {
+              requestId: req.id,
+              amountCents,
+              error: stripeRefund?.error || `Unconfirmed status: ${stripeRefund?.status}`,
+            },
+          });
           throw new Error(
-            `Stripe refund failed or remains unconfirmed (status: ${stripeRefund?.status || 'unconfirmed'}). Settlement journal not recorded.`
+            `Stripe refund failed or remains unconfirmed (status: ${stripeRefund?.status || 'unconfirmed'}${
+              stripeRefund?.error ? ` — ${stripeRefund.error}` : ''
+            }). Settlement journal not recorded.`
           );
         }
 
-        if (targetPayment) {
+        targetPayment.refundReason = req.reason;
+        const currentRefundedCents = dollarsToCents(targetPayment.refundedAmount || 0);
+        const nextRefundedCents = currentRefundedCents + amountCents;
+        targetPayment.refundedAmount = centsToDollars(nextRefundedCents);
+
+        // Set terminal status Refunded and populate refundedAt only after provider confirms completion
+        if (stripeRefund.status === 'succeeded' && nextRefundedCents >= dollarsToCents(targetPayment.amount)) {
           targetPayment.status = 'Refunded';
-          targetPayment.refundedAmount = centsToDollars(amountCents);
           targetPayment.refundedAt = new Date().toISOString();
-          targetPayment.refundReason = req.reason;
         }
 
         const lines: {
@@ -1732,6 +1840,13 @@ export async function decideApprovalInDb(params: {
   });
 }
 
+/**
+ * Updates the investigation status and audit notes on a payment reconciliation break.
+ * If marked as Resolved via Adjustment, automatically posts the balancing subledger journal entry.
+ *
+ * @param params - Reconciliation update details including itemId, status, notes, and actor.
+ * @returns The updated ReconciliationItem entity.
+ */
 export async function updateReconciliationBreakInDb(params: {
   itemId: string;
   status: InvestigationStatus;

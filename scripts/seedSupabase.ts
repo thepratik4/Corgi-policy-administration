@@ -21,23 +21,25 @@ async function main() {
 
   const isForce = process.argv.includes('--force') || process.argv.includes('-f');
 
-  // Verify whether an ACTIVE_SNAPSHOT already exists in corgi_system_state
-  const { data: existingSnapshot, error: checkError } = await supabase
-    .from('corgi_system_state')
-    .select('key')
-    .eq('key', 'ACTIVE_SNAPSHOT')
-    .maybeSingle();
+  // Check relational seed completion tracker when not forcing
+  if (!isForce) {
+    const { data: relationalCompletion, error: compCheckError } = await supabase
+      .from('corgi_system_state')
+      .select('key')
+      .eq('key', 'RELATIONAL_SEED_COMPLETED')
+      .maybeSingle();
 
-  if (checkError) {
-    console.error('Failed to verify existing ACTIVE_SNAPSHOT:', checkError.message);
-    process.exit(1);
-  }
+    if (compCheckError) {
+      console.error('Failed checking relational seed completion status:', compCheckError.message);
+      process.exit(1);
+    }
 
-  if (existingSnapshot && !isForce) {
-    console.log(
-      'ACTIVE_SNAPSHOT already exists in corgi_system_state. Exiting to avoid overwriting. Run with --force to overwrite.'
-    );
-    process.exit(0);
+    if (relationalCompletion) {
+      console.log(
+        'Database snapshot and relational data are already fully seeded. Run with --force to overwrite.'
+      );
+      process.exit(0);
+    }
   }
 
   console.log(`Seeding baseline state into Supabase:
@@ -50,22 +52,51 @@ async function main() {
 - ${state.reconciliationItems.length} reconciliation items
   `);
 
-  // 1. Snapshot State Table
-  const { error: stateError } = await supabase
-    .from('corgi_system_state')
-    .upsert(
-      {
+  // 1. Snapshot State Table & Concurrency Guard
+  if (isForce) {
+    const { error: stateError } = await supabase
+      .from('corgi_system_state')
+      .upsert(
+        {
+          key: 'ACTIVE_SNAPSHOT',
+          state: state,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+
+    if (stateError) {
+      console.error('Failed to force-upsert ACTIVE_SNAPSHOT:', stateError.message);
+      process.exit(1);
+    }
+    console.log('Successfully force-saved snapshot to corgi_system_state.');
+  } else {
+    // Attempt atomic insert: if record exists, handle conflict without overwriting
+    const { error: insertError } = await supabase
+      .from('corgi_system_state')
+      .insert({
         key: 'ACTIVE_SNAPSHOT',
         state: state,
         updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' }
-    );
+      });
 
-  if (stateError) {
-    console.warn('Warning syncing corgi_system_state:', stateError.message);
-  } else {
-    console.log('Successfully saved snapshot to corgi_system_state.');
+    if (insertError) {
+      const isConflict =
+        insertError.code === '23505' ||
+        insertError.message.includes('duplicate key') ||
+        insertError.message.includes('conflict');
+
+      if (isConflict) {
+        console.log(
+          'ACTIVE_SNAPSHOT already exists; preserving snapshot and completing/resuming relational table seeding.'
+        );
+      } else {
+        console.error('Failed to insert ACTIVE_SNAPSHOT:', insertError.message);
+        process.exit(1);
+      }
+    } else {
+      console.log('Successfully inserted new ACTIVE_SNAPSHOT into corgi_system_state.');
+    }
   }
 
   // 2. Brokers
@@ -285,6 +316,27 @@ async function main() {
     .upsert(reconRows, { onConflict: 'id' });
   if (reconError) console.error('Error seeding reconciliation items:', reconError.message);
   else console.log(`Seeded ${reconRows.length} reconciliation items.`);
+
+  // 9. Relational Seed Completion Tracking
+  await supabase.from('corgi_system_state').upsert(
+    {
+      key: 'RELATIONAL_SEED_COMPLETED',
+      state: {
+        completedAt: new Date().toISOString(),
+        tables: [
+          'brokers',
+          'policies',
+          'payments',
+          'claims',
+          'ledger_transactions',
+          'approval_requests',
+          'reconciliation_items',
+        ],
+      },
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'key' }
+  );
 
   console.log('\nSupabase cloud database seed complete! All tables and state snapshot populated.');
 }

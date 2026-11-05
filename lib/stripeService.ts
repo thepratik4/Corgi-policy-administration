@@ -120,6 +120,9 @@ export async function createStripePaymentIntent(params: {
 
 /**
  * Issues a Stripe refund in integer USD cents against a settled PaymentIntent.
+ * In live mode (configured API key), calls the official Stripe Refunds API.
+ * In mock/sandbox mode (synthetic test PaymentIntents), returns a deterministic sandbox refund.
+ * If a live Stripe call fails, returns status: 'failed' with error details rather than masking as synthetic success.
  */
 export async function createStripeRefund(params: {
   paymentIntentId: string;
@@ -132,11 +135,15 @@ export async function createStripeRefund(params: {
   amountCents: number;
   status: string;
   isLiveStripeSdk: boolean;
+  error?: string;
 }> {
   const { paymentIntentId, amountCents, reason, idempotencyKey } = params;
   const stripe = getStripeClient();
 
-  if (stripe && paymentIntentId.startsWith('pi_')) {
+  const isSyntheticPaymentIntent =
+    paymentIntentId.startsWith('pi_3QTest') || paymentIntentId.startsWith('pi_refund_');
+
+  if (stripe && paymentIntentId.startsWith('pi_') && !isSyntheticPaymentIntent) {
     try {
       const refund = await stripe.refunds.create(
         {
@@ -154,8 +161,15 @@ export async function createStripeRefund(params: {
         status: refund.status || 'succeeded',
         isLiveStripeSdk: true,
       };
-    } catch {
-      // Fall back if the PaymentIntent was seeded in local sandbox
+    } catch (err) {
+      return {
+        refundId: '',
+        paymentIntentId,
+        amountCents,
+        status: 'failed',
+        isLiveStripeSdk: true,
+        error: err instanceof Error ? err.message : 'Stripe refund API call failed',
+      };
     }
   }
 

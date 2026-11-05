@@ -256,7 +256,7 @@ export function evaluateWebhookEventTransition(params: {
   }
 
   // Out-of-order protection: terminal or advanced states cannot be downgraded
-  if (currentPaymentStatus === 'Refunded') {
+  if (currentPaymentStatus === 'Refunded' && eventType !== 'charge.refunded') {
     return {
       action: 'OUT_OF_ORDER_IGNORED',
       nextPaymentStatus: 'Refunded',
