@@ -80,3 +80,34 @@
   - Appends a new re-booked journal entry with the corrected effective date and adjusted pro-rata daily calculation.
   - Original rows remain completely untouched. The monthly broker statement and trial balance reflect the net difference and tie out to the cent.
 
+
+
+---
+
+### Entry 8 — T0 + 24h: PostgreSQL Cloud Database, Immutability Triggers & Least-Privilege RLS
+- **Context**: Moving beyond the local file cache to enterprise multi-tenant cloud storage while preserving the strict immutable subledger invariant.
+- **Decision**: Integrated Supabase PostgreSQL (`supabase/migrations/0001_corgi_financial_foundation.sql`) with two custom database triggers:
+  1. `prevent_posted_journal_mutation()`: Rejects any SQL `DELETE` on financial records (`journal_entries`, `journal_lines`), and rejects `UPDATE` on posted transaction fields (`journal_number`, `effective_date`, `recorded_at`, `reference`, `memo`, `posted_by_email`), permitting `reversed_by_entry_id` linking strictly when initially unset.
+  2. `enforce_balanced_journal_entry()`: A deferred constraint trigger on `journal_lines` that evaluates at `COMMIT` time, asserting that each journal entry has at least 2 lines and that sum(debit_cents) === sum(credit_cents) > 0.
+  3. **Least-Privilege RLS**: Revoked broad table permissions from `anon` and `authenticated`. Granted full access strictly to `service_role`, and granted read-only `SELECT` to `authenticated` staff on domain/reporting tables. System state is completely isolated from client roles.
+  4. **Hybrid Outage Resilience**: Hydration tracks local mutation timestamps and in-flight sync promises to prevent older cloud snapshots from overwriting newer local state, maintaining seamless fallback operation during transient cloud outages.
+
+---
+
+### Entry 9 — T0 + 28h: Model Context Protocol (MCP) Guardrails & Segregation of Duties
+- **Context**: Brief requirement: *"Three read tools, one write tool. The write tool must not directly modify money. It creates a request in the human approval queue. If your agent can modify the ledger on its own, you fail."*
+- **Decision**: Implemented an MCP server (`mcp-server.ts`) running over stdio with 3 read tools and 1 strictly guarded write tool:
+  1. `get_policy_as_of`: Reconstructs historical policy coverage schedule, active endorsements, and earned premium as of any arbitrary date T.
+  2. `get_broker_statement`: Computes deterministic broker commission statements and clawback reconciliations tied to the ledger.
+  3. `query_subledger`: Exposes trial balance, account balances, and journal entries with integer USD cent precision.
+  4. `request_endorsement_or_reserve_adjustment` (Write Tool): **Strictly queues into the human Maker-Checker approval table (`approval_requests`)**. It explicitly **does not** post journal entries, update policies, or touch ledger balances.
+- **Defense**: Financial fiduciary compliance forbids autonomous agents from altering subledger rows or releasing cash. All material adjustments (> $500 delta) require two-man human verification (Operations Admin proposes, Finance Approver decides, anti-self-approval enforced).
+
+---
+
+### Entry 10 — T0 + 32h: Declarations Document Generation & Temporal As-Of Policy Reconstruction
+- **Context**: Evaluators need downloadable declarations pages reflecting historical policy terms and coverage schedules as of any specific point in time.
+- **Decision**: Implemented server-side declarations page generator (`utils/declarationsGenerator.ts`) and temporal reconstructor (`utils/asOfDateReconstruction.ts`):
+  1. **Deterministic As-Of Slicing**: Given policy P and date T, the engine evaluates T against policy effective/expiration dates and all endorsement effective dates.
+  2. Endorsements with effectiveDate > T are excluded from coverage limits and historical premium calculations, while endorsements with effectiveDate <= T are prorated up to T.
+  3. Formatted declarations HTML prints directly to clean, high-fidelity PDF documents via native browser print pipelines or downloadable documents, displaying itemized coverages, limits, deductibles, state surplus lines taxes, stamping fees, and producer attribution.
