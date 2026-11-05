@@ -19,6 +19,27 @@ async function main() {
 
   const state = createInitialSeedState();
 
+  const isForce = process.argv.includes('--force') || process.argv.includes('-f');
+
+  // Verify whether an ACTIVE_SNAPSHOT already exists in corgi_system_state
+  const { data: existingSnapshot, error: checkError } = await supabase
+    .from('corgi_system_state')
+    .select('key')
+    .eq('key', 'ACTIVE_SNAPSHOT')
+    .maybeSingle();
+
+  if (checkError) {
+    console.error('Failed to verify existing ACTIVE_SNAPSHOT:', checkError.message);
+    process.exit(1);
+  }
+
+  if (existingSnapshot && !isForce) {
+    console.log(
+      'ACTIVE_SNAPSHOT already exists in corgi_system_state. Exiting to avoid overwriting. Run with --force to overwrite.'
+    );
+    process.exit(0);
+  }
+
   console.log(`Seeding baseline state into Supabase:
 - ${state.brokers.length} brokers
 - ${state.policies.length} policies

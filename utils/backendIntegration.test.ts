@@ -14,8 +14,10 @@ import {
   processVerifiedStripeWebhookInDb,
   reverseAndRebookJournalInDb,
   cancelPolicyInDb,
+  decideApprovalInDb,
 } from '../lib/serverDatabase';
 import { validateDoubleEntryBalance } from './financialRules';
+import { escapeHtml } from './reinsuranceSchedule';
 
 test('Server JWT signing, verification, and RBAC role enforcement', async () => {
   const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
@@ -235,4 +237,37 @@ test('cancelPolicyInDb cancels policy and rejects re-cancellation of already can
       }),
     /already cancelled/
   );
+});
+
+test('decideApprovalInDb: refund approval routes through Stripe provider and posts balanced settlement journal', async () => {
+  const state = await resetDatabaseToSeed();
+  const finUser = DEMO_USERS.FINANCE_APPROVER;
+  const refundReq = state.approvalRequests.find((r) => r.actionType === 'Payment Refund');
+  assert.ok(refundReq, 'Should have a pending Payment Refund approval request in seed');
+
+  const beforeTxnCount = state.ledgerTransactions.length;
+  const decided = await decideApprovalInDb({
+    requestId: refundReq.id,
+    decision: 'Approved',
+    note: 'Approved after verification of risk reduction equipment',
+    actor: finUser,
+  });
+
+  assert.equal(decided.status, 'Approved');
+  assert.equal(decided.decidedByEmail, finUser.email);
+
+  const updatedState = getDbState();
+  assert.equal(updatedState.ledgerTransactions.length, beforeTxnCount + 1);
+
+  const settlementTxn = updatedState.ledgerTransactions[0];
+  assert.equal(settlementTxn.referenceType, 'REVERSAL');
+  assert.equal(validateDoubleEntryBalance(settlementTxn.lines).isBalanced, true);
+});
+
+test('escapeHtml in reinsuranceSchedule escapes HTML entities and tags', () => {
+  assert.equal(escapeHtml('<script>alert("xss")</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+  assert.equal(escapeHtml("O'Connor & Sons <LLC>"), 'O&#39;Connor &amp; Sons &lt;LLC&gt;');
+  assert.equal(escapeHtml(null), '');
+  assert.equal(escapeHtml(undefined), '');
+  assert.equal(escapeHtml(12345), '12345');
 });

@@ -120,6 +120,9 @@ export function PoliciesView() {
 
   const handlePrintCessionNote = () => {
     if (!selectedPolicy || !cession) return;
+    if (selectedPolicy.status === 'Draft' || selectedPolicy.status === 'Pending') {
+      return;
+    }
     const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
     const html = generateReinsuranceCessionNoteHtml(selectedPolicy, broker);
     const printed = printHtmlDocument(`Reinsurance_Cession_${selectedPolicy.policyNumber}`, html);

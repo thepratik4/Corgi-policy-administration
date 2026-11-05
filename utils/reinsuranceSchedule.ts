@@ -80,6 +80,16 @@ export function calculatePolicyReinsuranceCession(
   };
 }
 
+export function escapeHtml(str: string | number | null | undefined): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function generateReinsuranceCessionNoteHtml(
   policy: Policy,
   broker?: Broker | null,
@@ -96,7 +106,7 @@ export function generateReinsuranceCessionNoteHtml(
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Reinsurance Cession Note — ${policy.policyNumber}</title>
+  <title>Reinsurance Cession Note — ${escapeHtml(policy.policyNumber)}</title>
   <style>
     @page { size: letter; margin: 0.75in; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; line-height: 1.45; font-size: 13px; margin: 0; padding: 24px; }
@@ -122,7 +132,7 @@ export function generateReinsuranceCessionNoteHtml(
     <div>
       <div class="title">Reinsurance Cession Note</div>
       <div class="subtitle">Commercial Lines Quota Share Facility · Schedule A</div>
-      <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Treaty Ref: ${treaty.treatyCode} · As of ${issuedDate}</div>
+      <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Treaty Ref: ${escapeHtml(treaty.treatyCode)} · As of ${escapeHtml(issuedDate)}</div>
     </div>
     <div style="text-align: right;">
       <div style="font-size: 14px; font-weight: 800; color: #0f172a;">CORGI INSURANCE SERVICES</div>
@@ -135,13 +145,13 @@ export function generateReinsuranceCessionNoteHtml(
     <div class="grid">
       <div>
         <div class="field-label">Original Insured Legal Entity</div>
-        <div class="field-value">${policy.customerName}</div>
-        <div style="font-size: 11px; color: #64748b;">EIN: ${policy.customerEin} · ${policy.customerIndustry}</div>
+        <div class="field-value">${escapeHtml(policy.customerName)}</div>
+        <div style="font-size: 11px; color: #64748b;">EIN: ${escapeHtml(policy.customerEin)} · ${escapeHtml(policy.customerIndustry)}</div>
       </div>
       <div>
         <div class="field-label">Primary Underlying Policy</div>
-        <div class="field-value">${policy.policyNumber}</div>
-        <div style="font-size: 11px; color: #64748b;">Term: ${policy.effectiveDate} to ${policy.expirationDate} (1 Year)</div>
+        <div class="field-value">${escapeHtml(policy.policyNumber)}</div>
+        <div style="font-size: 11px; color: #64748b;">Term: ${escapeHtml(policy.effectiveDate)} to ${escapeHtml(policy.expirationDate)} (1 Year)</div>
       </div>
     </div>
   </div>
@@ -171,7 +181,7 @@ export function generateReinsuranceCessionNoteHtml(
       </tr>
       <tr>
         <td><strong>Treaty Reinsurer</strong></td>
-        <td>${treaty.reinsurerName} (${treaty.reinsurerRating})</td>
+        <td>${escapeHtml(treaty.reinsurerName)} (${escapeHtml(treaty.reinsurerRating)})</td>
         <td class="num">${treaty.cessionRatePercent}.0%</td>
         <td class="num">$${cession.cededPremiumDollars.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
         <td class="num">$${cession.cededOccurrenceLimitDollars.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
@@ -224,7 +234,7 @@ export function generateReinsuranceCessionNoteHtml(
   </table>
 
   <div class="notice">
-    <strong>STATUTORY REINSURANCE BINDING NOTICE:</strong> This cession note confirms that liability coverage under Policy <strong>${policy.policyNumber}</strong> is ceded under the terms of Quota Share Treaty <strong>${treaty.treatyCode}</strong>. Ceded claims are subject to simultaneous cash recovery from the reinsurer under the "Follow the Fortunes" doctrine upon proof of loss settlement.
+    <strong>STATUTORY REINSURANCE BINDING NOTICE:</strong> This cession note confirms that liability coverage under Policy <strong>${escapeHtml(policy.policyNumber)}</strong> is ceded under the terms of Quota Share Treaty <strong>${escapeHtml(treaty.treatyCode)}</strong>. Ceded claims are subject to simultaneous cash recovery from the reinsurer under the "Follow the Fortunes" doctrine upon proof of loss settlement.
   </div>
 
   <div class="signatures">

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSupabaseClient } from './supabaseClient';
+import { createStripeRefund } from './stripeService';
 import {
   ApprovalRequest,
   AuditLogRecord,
@@ -1583,7 +1584,7 @@ export async function decideApprovalInDb(params: {
   note: string;
   actor: DemoUser;
 }): Promise<ApprovalRequest> {
-  return runDbTransaction((state) => {
+  return runDbTransaction(async (state) => {
     const req = state.approvalRequests.find((r) => r.id === params.requestId);
     if (!req) {
       throw new Error('Approval request not found.');
@@ -1640,6 +1641,43 @@ export async function decideApprovalInDb(params: {
           ? dollarsToCents(req.shortRatePenaltyAmount)
           : 0;
         const grossUnearnedCents = amountCents + penaltyCents;
+
+        // Locate corresponding payment or paymentIntent for the refund path
+        const targetPayment = state.payments.find(
+          (p) =>
+            p.id === req.targetEntityId ||
+            p.stripePaymentIntentId === req.targetEntityId ||
+            p.policyId === req.targetEntityId ||
+            p.policyNumber === req.targetReference
+        );
+
+        const paymentIntentId =
+          targetPayment?.stripePaymentIntentId ||
+          (req.targetEntityId.startsWith('pi_')
+            ? req.targetEntityId
+            : `pi_refund_${req.referenceNumber.toLowerCase()}`);
+
+        // Submit approved refund to payment provider (Stripe)
+        const stripeRefund = await createStripeRefund({
+          paymentIntentId,
+          amountCents,
+          reason: req.reason || `Approved ${req.actionType} (${req.referenceNumber})`,
+          idempotencyKey: `apr_refund_${req.id}_${amountCents}`,
+        });
+
+        // Provider confirmation guard: do not record settlement when refund fails or remains unconfirmed
+        if (!stripeRefund || (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending')) {
+          throw new Error(
+            `Stripe refund failed or remains unconfirmed (status: ${stripeRefund?.status || 'unconfirmed'}). Settlement journal not recorded.`
+          );
+        }
+
+        if (targetPayment) {
+          targetPayment.status = 'Refunded';
+          targetPayment.refundedAmount = centsToDollars(amountCents);
+          targetPayment.refundedAt = new Date().toISOString();
+          targetPayment.refundReason = req.reason;
+        }
 
         const lines: {
           accountCode: string;
