@@ -6,7 +6,6 @@ import { usePolicyAdmin } from '../../services/policyAdminStore';
 import {
   calculatePortfolioMetrics,
   calculatePortfolioProgressBreakdown,
-  formatDurationClock,
 } from '../../utils/financialRules';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { StatusIndicator } from '../../components/ui/StatusIndicator';
@@ -18,9 +17,6 @@ import {
   ShieldAlert,
   ArrowUpRight,
   Search,
-  Pause,
-  Play,
-  Square,
   CalendarClock,
   ChevronLeft,
   ChevronRight,
@@ -29,7 +25,6 @@ import {
   Layers,
   Building2,
   FileCheck2,
-  Activity,
   X,
 } from 'lucide-react';
 import { Policy } from '../../types/domain';
@@ -219,19 +214,6 @@ export function DashboardView() {
 
   // Interactive Semi-Circular Gauge Mode
   const [gaugeMode, setGaugeMode] = useState<'earned' | 'collection' | 'reconciliation'>('earned');
-
-  // Interactive SLA Time Tracker State (starts at 01:24:08 = 5048 seconds like reference image!)
-  const [timerSeconds, setTimerSeconds] = useState(5048);
-  const [timerRunning, setTimerRunning] = useState(true);
-  const [activeSlaTarget, setActiveSlaTarget] = useState('CLM-2026-0104 · Cyber Breach SLA');
-
-  useEffect(() => {
-    if (!timerRunning) return;
-    const interval = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [timerRunning]);
 
   // Issue Policy Form State
   const [customerName, setCustomerName] = useState('');
@@ -427,17 +409,6 @@ export function DashboardView() {
     });
   };
 
-  const handleStopAndLogTimer = () => {
-    const formatted = formatDurationClock(timerSeconds);
-    setTimerRunning(false);
-    addToast({
-      title: `Logged ${formatted} Underwriting SLA Audit`,
-      description: `Recorded time entry against ${activeSlaTarget}.`,
-      variant: 'success',
-    });
-    setTimerSeconds(0);
-  };
-
   const handleIssuePolicySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customerName.trim()) {
@@ -516,65 +487,6 @@ export function DashboardView() {
 
   return (
     <div className="space-y-4">
-      {/* Top Interactive Search & Workspace Command Bar (Inspired by Reference Header) */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl px-4 py-2.5 sm:px-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            aria-label="Search policies, claims, or insureds"
-            placeholder="Search policy, named insured, or claim..."
-            className="w-full pl-9 pr-14 py-1.5 text-xs bg-[#F8FAFC] border border-slate-200/90 rounded-full text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-[#EA580C] transition-all"
-          />
-          {searchQuery ? (
-            <button
-              type="button"
-              onClick={() => setSearchQuery('')}
-              aria-label="Clear search query"
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          ) : (
-            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[11px] font-mono text-slate-400 select-none">
-              ⌘ F
-            </span>
-          )}
-        </div>
-
-        {/* Subledger Live Summary Metrics Strip (Ensures all 7 core financial metrics are immediately scannable) */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="text-slate-400">Written:</span>
-            <span className="font-mono font-semibold text-slate-900 tabular-nums">
-              {formatCurrency(metrics.writtenPremium)}
-            </span>
-          </div>
-          <span className="text-slate-300" aria-hidden="true">·</span>
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="text-slate-400">Earned:</span>
-            <span className="font-mono font-semibold text-emerald-700 tabular-nums">
-              {formatCurrency(metrics.earnedPremium)}
-            </span>
-          </div>
-          <span className="text-slate-300" aria-hidden="true">·</span>
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="text-slate-400">Unearned (2110):</span>
-            <span className="font-mono font-semibold text-slate-900 tabular-nums">
-              {formatCurrency(metrics.unearnedPremium)}
-            </span>
-          </div>
-          <span className="text-slate-300" aria-hidden="true">·</span>
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="text-slate-400">Reserves (2310):</span>
-            <span className="font-mono font-semibold text-amber-700 tabular-nums">
-              {formatCurrency(outstandingReserves)}
-            </span>
-          </div>
-        </div>
-      </div>
 
       {/* Dashboard Title & Pill CTA Row (Matches Donezo "Dashboard" + "+ Add Project / Import Data") */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -802,8 +714,28 @@ export function DashboardView() {
                 Portfolio Velocity Analytics
               </h2>
               <p className="text-[11px] text-slate-500">
-                Click any pillar to inspect solid bound vs. hatched projected volume
+                Hover or select any pillar to inspect solid bound vs. hatched projected volume
               </p>
+              <div className="flex items-center gap-3 text-[10px] text-slate-500 mt-1">
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#0F172A]" />
+                  <span>Bound</span>
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    className="w-2 h-2 rounded-full border border-slate-300 bg-slate-100"
+                    style={{
+                      backgroundImage:
+                        'repeating-linear-gradient(135deg, #94A3B8 0px, #94A3B8 1px, transparent 1px, transparent 3px)',
+                    }}
+                  />
+                  <span>Projected</span>
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#EA580C]" />
+                  <span>Active Focus</span>
+                </span>
+              </div>
             </div>
 
             <div className="flex items-center gap-1.5">
@@ -864,21 +796,21 @@ export function DashboardView() {
             {chartBars.map((bar, idx) => {
               const isSelected = idx === selectedBarIndex;
               const solidColorClass = isSelected
-                ? 'bg-[#EA580C] shadow-md shadow-orange-500/20'
-                : idx % 2 === 1
-                ? 'bg-[#0F172A] hover:bg-slate-800'
-                : 'bg-[#FB923C] hover:bg-[#F97316]';
+                ? 'bg-[#EA580C] shadow-md shadow-orange-500/25'
+                : 'bg-[#0F172A] hover:bg-slate-800';
 
               return (
                 <div
                   key={`${bar.shortLabel}-${idx}`}
-                  className="flex-1 flex flex-col items-center h-full justify-end group"
+                  onMouseEnter={() => setSelectedBarIndex(idx)}
+                  className="flex-1 flex flex-col items-center h-full justify-end group cursor-pointer"
                 >
                   <button
                     type="button"
                     onClick={() => setSelectedBarIndex(idx)}
+                    onMouseEnter={() => setSelectedBarIndex(idx)}
                     aria-label={`Inspect ${bar.fullLabel}: ${formatCurrency(bar.value)}`}
-                    className="w-full max-w-[48px] h-full flex flex-col justify-end items-center relative focus:outline-none"
+                    className="w-full max-w-[48px] h-full flex flex-col justify-end items-center relative focus:outline-none cursor-pointer"
                   >
                     {/* Floating callout badge above selected bar */}
                     <AnimatePresence>
@@ -921,8 +853,8 @@ export function DashboardView() {
                   </button>
 
                   <span
-                    className={`mt-2 text-[11px] font-mono ${
-                      isSelected ? 'font-bold text-[#EA580C]' : 'text-slate-400'
+                    className={`mt-2 text-[11px] font-mono transition-colors ${
+                      isSelected ? 'font-bold text-[#EA580C]' : 'text-slate-400 group-hover:text-slate-700'
                     }`}
                   >
                     {bar.shortLabel}
@@ -1098,10 +1030,10 @@ export function DashboardView() {
         </div>
       </section>
 
-      {/* ROW 3: Bottom 3-Column Bento Grid (Team Collaboration + Semi-Circular Portfolio Progress + Dark Wave SLA Timer) */}
+      {/* ROW 3: Bottom 2-Column Bento Grid (Team Collaboration + Semi-Circular Portfolio Progress) */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-        {/* Col 1 (5 cols): Underwriting & Finance Team Collaboration (Donezo "Team Collaboration") */}
-        <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between">
+        {/* Col 1 (7 cols): Underwriting & Finance Team Collaboration (Donezo "Team Collaboration") */}
+        <div className="lg:col-span-7 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between gap-2 mb-3">
               <div>
@@ -1181,8 +1113,8 @@ export function DashboardView() {
           </div>
         </div>
 
-        {/* Col 2 (4 cols): Semi-Circular Portfolio Progress Gauge (Donezo "Project Progress 41%" style) */}
-        <div className="lg:col-span-4 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between">
+        {/* Col 2 (5 cols): Semi-Circular Portfolio Progress Gauge (Donezo "Project Progress 41%" style) */}
+        <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-slate-900 font-display">
@@ -1331,93 +1263,11 @@ export function DashboardView() {
             </button>
           </div>
         </div>
-
-        {/* Col 3 (3 cols): Dark Corgi Topographic Wave SLA Time Tracker (Donezo "Time Tracker 01:24:08" card) */}
-        <div className="lg:col-span-3 bg-[#0F172A] text-white rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden shadow-sm">
-          {/* Decorative Corgi Topographic Contour Waves in background */}
-          <svg
-            aria-hidden="true"
-            className="absolute inset-0 w-full h-full object-cover opacity-25 pointer-events-none"
-            viewBox="0 0 300 240"
-            fill="none"
-          >
-            <path
-              d="M-30 190 C 60 120, 180 240, 330 140"
-              stroke="#EA580C"
-              strokeWidth="14"
-              strokeLinecap="round"
-            />
-            <path
-              d="M-30 220 C 80 150, 200 260, 330 175"
-              stroke="#F97316"
-              strokeWidth="8"
-              strokeLinecap="round"
-            />
-            <path
-              d="M140 -20 C 190 70, 260 60, 330 110"
-              stroke="#FB923C"
-              strokeWidth="6"
-              strokeLinecap="round"
-            />
-          </svg>
-
-          <div className="relative z-10 flex items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-white font-display">
-              SLA Audit Tracker
-            </span>
-            <Activity className="w-4 h-4 text-[#FB923C]" />
-          </div>
-
-          <div className="relative z-10 my-3 text-center">
-            <p
-              data-testid="sla-timer-display"
-              className="text-3xl sm:text-4xl font-bold font-mono tabular-nums tracking-wider text-white"
-            >
-              {formatDurationClock(timerSeconds)}
-            </p>
-            <select
-              aria-label="Select Active SLA Audit Target"
-              value={activeSlaTarget}
-              onChange={(e) => setActiveSlaTarget(e.target.value)}
-              className="mt-2 bg-white/10 text-orange-100 text-[11px] px-2.5 py-1 rounded-full border border-white/15 focus:outline-none focus:border-[#EA580C] max-w-full truncate"
-            >
-              <option value="CLM-2026-0104 · Cyber Breach SLA" className="text-slate-900">
-                CLM-2026-0104 · Cyber Breach SLA
-              </option>
-              <option value="APR-2026-104 · Four-Eyes Payout SLA" className="text-slate-900">
-                APR-2026-104 · Four-Eyes Payout SLA
-              </option>
-              <option value="CRG-DNO-2026-8481 · Underwriting Bind" className="text-slate-900">
-                CRG-DNO-2026-8481 · Underwriting Bind
-              </option>
-            </select>
-          </div>
-
-          <div className="relative z-10 flex items-center justify-center gap-3 pt-1">
-            <button
-              type="button"
-              onClick={() => setTimerRunning((prev) => !prev)}
-              aria-label={timerRunning ? 'Pause SLA timer' : 'Resume SLA timer'}
-              className="w-10 h-10 rounded-full bg-white text-slate-900 hover:bg-orange-50 flex items-center justify-center shadow-md transition-transform active:scale-95"
-            >
-              {timerRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleStopAndLogTimer}
-              aria-label="Stop and log SLA audit time"
-              className="w-10 h-10 rounded-full bg-[#EA580C] hover:bg-[#C2410C] text-white flex items-center justify-center shadow-md transition-transform active:scale-95"
-            >
-              <Square className="w-4 h-4 fill-current" />
-            </button>
-          </div>
-        </div>
       </section>
 
       {/* ROW 4: Interactive Subledger & Policy Activity Inspector */}
       <section className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="px-6 py-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
             <button
               type="button"
@@ -1454,20 +1304,49 @@ export function DashboardView() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() =>
-              navigateTo(activeBottomTab === 'payments' ? 'payments' : 'policies')
-            }
-            className="text-xs font-semibold text-[#EA580C] hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-          >
-            <span>
-              {activeBottomTab === 'payments'
-                ? 'Open Full Payments Subledger'
-                : 'Open Full Policy Directory'}
-            </span>
-            <ArrowUpRight className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+            {/* Search Input directly above the table it filters */}
+            <div className="relative flex-1 md:w-64 max-w-sm">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                aria-label="Filter policies or payments in table"
+                placeholder={
+                  activeBottomTab === 'payments'
+                    ? 'Filter payments by ID, customer...'
+                    : 'Filter policies by #, customer, broker...'
+                }
+                className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200/90 rounded-full text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-[#EA580C] focus:bg-white transition-all"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear table search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                navigateTo(activeBottomTab === 'payments' ? 'payments' : 'policies')
+              }
+              className="text-xs font-semibold text-[#EA580C] hover:underline inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+            >
+              <span>
+                {activeBottomTab === 'payments'
+                  ? 'Open Full Payments Subledger'
+                  : 'Open Full Policy Directory'}
+              </span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {activeBottomTab === 'policies' && (

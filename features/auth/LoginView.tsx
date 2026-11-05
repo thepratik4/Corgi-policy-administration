@@ -199,7 +199,7 @@ export function LoginView() {
             <div className="mt-8 pt-6 border-t border-slate-200">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-xs font-semibold text-slate-800">
-                  Instant Demo Login Profiles (Frontend Phase)
+                  Instant Demo Login Profiles
                 </span>
                 <span className="text-[11px] text-slate-500">
                   Sandbox Auth Only

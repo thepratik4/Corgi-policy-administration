@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { usePolicyAdmin } from '../services/policyAdminStore';
-import { NavigationTab, UserRole } from '../types/domain';
+import { NavigationTab } from '../types/domain';
 import {
   LayoutDashboard,
   FileText,
@@ -16,8 +16,6 @@ import {
   LogOut,
   Menu,
   X,
-  UserCheck,
-  Shield,
 } from 'lucide-react';
 
 const NAV_ITEMS: {
@@ -62,12 +60,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMobileMenuOpen(false);
   };
 
-  const handleToggleRole = () => {
-    if (!currentUser) return;
-    const nextRole: UserRole =
-      currentUser.role === 'OPERATIONS_ADMIN' ? 'FINANCE_APPROVER' : 'OPERATIONS_ADMIN';
-    switchRole(nextRole);
-  };
 
   return (
     <div className="min-h-screen flex bg-[#F8FAFC] text-[#0F172A]">
@@ -284,79 +276,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
-        {/* Top Navigation Bar (Strict 3-Zone SaaS Contract: Breadcrumb — Quick Nav — Primary Role Switch CTA) */}
-        <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between gap-8 sticky top-0 z-20">
-          {/* Zone 1: Mobile Menu Trigger + Breadcrumb */}
-          <div className="flex items-center gap-3 min-w-0 shrink-0">
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(true)}
-              aria-label="Open navigation menu"
-              className="lg:hidden p-2 text-slate-600 hover:text-slate-900 rounded-lg"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="flex items-center gap-2 text-sm whitespace-nowrap">
-              <span className="text-slate-500 hidden sm:inline">Corgi Commercial</span>
-              <span className="text-slate-300 hidden sm:inline" aria-hidden="true">/</span>
-              <span className="font-semibold text-slate-900 font-display">
-                {activeNavObj.label}
-              </span>
-            </div>
-          </div>
-
-          {/* Zone 2: Concise Single-Line Workspace Jump Links */}
-          <nav
-            aria-label="Quick Workspace Links"
-            className="hidden xl:flex items-center gap-6 text-xs font-medium text-slate-600"
+        {/* Mobile Header (Accessible navigation drawer on small screens) */}
+        <header className="lg:hidden h-14 bg-white border-b border-slate-200 px-4 flex items-center justify-between sticky top-0 z-20">
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            aria-label="Open navigation menu"
+            className="p-2 text-slate-600 hover:text-slate-900 rounded-lg"
           >
-            <button
-              type="button"
-              onClick={() => handleNavClick('policies')}
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
-            >
-              Policy Book
-            </button>
-            <button
-              type="button"
-              onClick={() => handleNavClick('claims')}
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
-            >
-              Claims & Reserves
-            </button>
-            <button
-              type="button"
-              onClick={() => handleNavClick('ledger')}
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
-            >
-              Double-Entry Ledger
-            </button>
-            <button
-              type="button"
-              onClick={() => handleNavClick('approvals')}
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
-            >
-              Approvals ({pendingApprovalsCount})
-            </button>
-          </nav>
-
-          {/* Zone 3: Single Primary Role Action */}
-          <div className="flex items-center gap-3 shrink-0">
-            <button
-              type="button"
-              onClick={handleToggleRole}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-800 bg-slate-100 hover:bg-slate-200/80 rounded-lg transition-colors whitespace-nowrap shrink-0"
-            >
-              {currentUser?.role === 'FINANCE_APPROVER' ? (
-                <Shield className="w-3.5 h-3.5 text-[#EA580C]" />
-              ) : (
-                <UserCheck className="w-3.5 h-3.5 text-[#EA580C]" />
-              )}
-              <span>
-                {currentUser?.roleLabel} · Switch Role
-              </span>
-            </button>
-          </div>
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="text-sm font-semibold text-slate-900 font-display">
+            {activeNavObj.label}
+          </span>
+          <div className="w-9" />
         </header>
 
         {/* Page Viewport */}
