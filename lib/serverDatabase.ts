@@ -178,7 +178,6 @@ export function getDbState(): CorgiDatabaseState {
     fs.writeFileSync(tmpFile, JSON.stringify(fresh, null, 2), 'utf8');
     fs.renameSync(tmpFile, DB_FILE);
   } catch {}
-  void syncStateToSupabase(fresh);
   return fresh;
 }
 
@@ -216,6 +215,37 @@ export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
   }
 }
 
+function mapRelationalPolicyToDomain(row: Record<string, unknown>): Policy {
+  return {
+    id: String(row.id),
+    policyNumber: String(row.policy_number || row.id),
+    customerName: String(row.customer_name || 'Commercial Policyholder'),
+    customerIndustry: String(row.customer_industry || 'Commercial Enterprise'),
+    customerEin: String(row.customer_ein || '00-0000000'),
+    customerAddress: String(row.customer_address || ''),
+    brokerId: String(row.broker_id || 'brk-101'),
+    brokerName: String(row.broker_name || 'Apex Risk Advisors'),
+    lineOfBusiness: (row.line_of_business as Policy['lineOfBusiness']) || 'Commercial General Liability',
+    status: (row.status as Policy['status']) || 'Active',
+    writtenPremium: centsToDollars(Number(row.written_premium_cents) || 0),
+    taxesAndFees: centsToDollars(Number(row.taxes_and_fees_cents) || 0),
+    earnedPremium: centsToDollars(Number(row.earned_premium_cents) || 0),
+    unearnedPremium: centsToDollars(Number(row.unearned_premium_cents) || 0),
+    collectedPremium: centsToDollars(Number(row.collected_premium_cents) || 0),
+    aggregateCoverageLimit: centsToDollars(Number(row.aggregate_limit_cents) || 0),
+    perOccurrenceLimit: centsToDollars(Number(row.occurrence_limit_cents) || 0),
+    deductible: centsToDollars(Number(row.deductible_cents) || 0),
+    effectiveDate: String(row.effective_date || new Date().toISOString().slice(0, 10)),
+    expirationDate: String(row.expiration_date || new Date().toISOString().slice(0, 10)),
+    bindDate: row.bind_date ? String(row.bind_date) : undefined,
+    cancellationDate: row.cancellation_date ? String(row.cancellation_date) : undefined,
+    underwriter: String(row.underwriter || 'Underwriting Operations'),
+    coverages: Array.isArray(row.coverages) ? (row.coverages as Policy['coverages']) : [],
+    endorsements: Array.isArray(row.endorsements) ? (row.endorsements as Policy['endorsements']) : [],
+    updatedAt: (row.recorded_at ? String(row.recorded_at) : new Date().toISOString()).slice(0, 10),
+  };
+}
+
 let _hasHydratedFromCloud = false;
 
 /**
@@ -246,30 +276,85 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
       .eq('key', 'ACTIVE_SNAPSHOT')
       .maybeSingle();
 
+    let cloudState: CorgiDatabaseState | null = null;
+    let cloudUpdatedAt = 0;
+
     if (!error && data?.state && isValidDatabaseState(data.state)) {
-      const cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
-
-      // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
-      if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt) {
-        return global._corgiDbState;
-      }
-
-      const cloudState = data.state;
-      global._corgiDbState = cloudState;
-      _hasHydratedFromCloud = true;
-      _lastLocalMutationTimestamp = cloudUpdatedAt || Date.now();
-
-      try {
-        if (!fs.existsSync(DATA_DIR)) {
-          fs.mkdirSync(DATA_DIR, { recursive: true });
-        }
-        const tmpFile = `${DB_FILE}.tmp`;
-        fs.writeFileSync(tmpFile, JSON.stringify(cloudState, null, 2), 'utf8');
-        fs.renameSync(tmpFile, DB_FILE);
-      } catch {}
-
-      return cloudState;
+      cloudState = data.state;
+      cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
+    } else if (global._corgiDbState && isValidDatabaseState(global._corgiDbState)) {
+      cloudState = global._corgiDbState;
+    } else {
+      cloudState = createInitialSeedState();
     }
+
+    // Reconcile relational 'policies' to guarantee newly created policies never vanish
+    let snapshotRepaired = false;
+    try {
+      const { data: relationalPolicies, error: polErr } = await supabase
+        .from('policies')
+        .select('*');
+
+      if (!polErr && Array.isArray(relationalPolicies) && relationalPolicies.length > 0) {
+        for (const row of relationalPolicies) {
+          const existingIdx = cloudState.policies.findIndex(
+            (p) => p.id === row.id || p.policyNumber === row.policy_number
+          );
+          if (existingIdx === -1) {
+            const mapped = mapRelationalPolicyToDomain(row as Record<string, unknown>);
+            cloudState.policies.unshift(mapped);
+            snapshotRepaired = true;
+          } else {
+            const existing = cloudState.policies[existingIdx];
+            if (row.status && row.status !== existing.status) {
+              existing.status = row.status as Policy['status'];
+              snapshotRepaired = true;
+            }
+            if (row.collected_premium_cents !== undefined) {
+              const collectedDollars = centsToDollars(Number(row.collected_premium_cents));
+              if (collectedDollars !== existing.collectedPremium) {
+                existing.collectedPremium = collectedDollars;
+                snapshotRepaired = true;
+              }
+            }
+          }
+        }
+      }
+    } catch (mergeErr) {
+      console.warn('Relational policy reconciliation warning:', mergeErr);
+    }
+
+    // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
+    if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt && !snapshotRepaired && !force) {
+      return global._corgiDbState;
+    }
+
+    global._corgiDbState = cloudState;
+    _hasHydratedFromCloud = true;
+    _lastLocalMutationTimestamp = Math.max(cloudUpdatedAt, Date.now());
+
+    if (snapshotRepaired) {
+      // Asynchronously repair ACTIVE_SNAPSHOT with the complete merged policies
+      void supabase.from('corgi_system_state').upsert(
+        {
+          key: 'ACTIVE_SNAPSHOT',
+          state: cloudState,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+    }
+
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const tmpFile = `${DB_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(cloudState, null, 2), 'utf8');
+      fs.renameSync(tmpFile, DB_FILE);
+    } catch {}
+
+    return cloudState;
   } catch (err) {
     // Offline resilience: fallback safely to local cache
     console.warn('Hydration notice (offline fallback active):', err instanceof Error ? err.message : err);

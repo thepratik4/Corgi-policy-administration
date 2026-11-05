@@ -318,3 +318,52 @@ test('escapeHtml in reinsuranceSchedule escapes HTML entities and tags', () => {
   assert.equal(escapeHtml(undefined), '');
   assert.equal(escapeHtml(12345), '12345');
 });
+
+test('issuePolicyInDb and payment intent: policy is persisted and found by both id and policyNumber', async () => {
+  await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+
+  const result = await issuePolicyInDb({
+    customerName: 'Sierra Autonomous Inc. Ltd',
+    customerIndustry: 'Autonomous Systems & Robotics',
+    customerEin: '12-9840291',
+    customerAddress: '100 Innovation Way, Palo Alto, CA 94304',
+    brokerId: 'brk-01',
+    lineOfBusiness: 'Commercial General Liability',
+    writtenPremiumDollars: 45000,
+    aggregateCoverageLimitDollars: 2000000,
+    perOccurrenceLimitDollars: 1000000,
+    deductibleDollars: 5000,
+    effectiveDate: '2026-11-05',
+    expirationDate: '2027-11-05',
+    actor: opsUser,
+  });
+
+  assert.ok(result.policy);
+  assert.equal(result.policy.customerName, 'Sierra Autonomous Inc. Ltd');
+  assert.equal(result.policy.writtenPremium, 45000);
+
+  const state = getDbState();
+  const foundById = state.policies.find((p) => p.id === result.policy.id || p.policyNumber === result.policy.id);
+  assert.ok(foundById, 'Policy should be resolvable by id');
+  assert.equal(foundById.id, result.policy.id);
+
+  const foundByNumber = state.policies.find((p) => p.id === result.policy.policyNumber || p.policyNumber === result.policy.policyNumber);
+  assert.ok(foundByNumber, 'Policy should be resolvable by policyNumber');
+  assert.equal(foundByNumber.policyNumber, result.policy.policyNumber);
+
+  // Record a PaymentIntent against the newly issued policy
+  const payment = await recordPaymentIntentCreatedInDb({
+    policyId: result.policy.id,
+    amountCents: 4500000,
+    paymentMethod: 'Visa •••• 4242',
+    stripePaymentIntentId: 'pi_test_sierra_autonomous',
+    idempotencyKey: 'idem_sierra_test',
+    actor: opsUser,
+  });
+
+  assert.ok(payment);
+  assert.equal(payment.status, 'Pending');
+  assert.equal(payment.amount, 45000);
+  assert.equal(payment.policyNumber, result.policy.policyNumber);
+});

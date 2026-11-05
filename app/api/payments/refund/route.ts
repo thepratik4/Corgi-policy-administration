@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateRequest } from '../../../../lib/serverAuth';
 import {
   getDbState,
+  hydrateStateFromSupabaseIfAvailable,
   processVerifiedStripeWebhookInDb,
 } from '../../../../lib/serverDatabase';
 import { createStripeRefund } from '../../../../lib/stripeService';
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    await hydrateStateFromSupabaseIfAvailable();
     const db = getDbState();
     const payment = db.payments.find(
       (p) => p.id === parsed.data.paymentId || p.stripePaymentIntentId === parsed.data.paymentId
