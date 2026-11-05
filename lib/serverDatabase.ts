@@ -185,6 +185,11 @@ let _pendingSyncPromise: Promise<void> | null = null;
 let _lastLocalMutationTimestamp = 0;
 let _lastSyncError: Error | null = null;
 
+/**
+ * Persists active database state to local disk cache and initiates cloud sync.
+ *
+ * @param state - The database state snapshot to persist.
+ */
 export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
   _lastLocalMutationTimestamp = Date.now();
 
@@ -215,6 +220,12 @@ export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
   }
 }
 
+/**
+ * Maps a relational database row from the Supabase `policies` table to domain `Policy` model.
+ *
+ * @param row - Relational row object from Supabase.
+ * @returns Structured Policy domain object.
+ */
 function mapRelationalPolicyToDomain(row: Record<string, unknown>): Policy {
   return {
     id: String(row.id),
@@ -276,16 +287,26 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
       .eq('key', 'ACTIVE_SNAPSHOT')
       .maybeSingle();
 
+    if (error) {
+      console.warn('Hydration notice (cloud read failed):', error.message);
+      return null;
+    }
+
     let cloudState: CorgiDatabaseState | null = null;
     let cloudUpdatedAt = 0;
 
-    if (!error && data?.state && isValidDatabaseState(data.state)) {
+    if (data?.state && isValidDatabaseState(data.state)) {
       cloudState = data.state;
       cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
-    } else if (global._corgiDbState && isValidDatabaseState(global._corgiDbState)) {
-      cloudState = global._corgiDbState;
     } else {
-      cloudState = createInitialSeedState();
+      // Successful query with no row: check local disk cache before falling back to seed
+      const local = getDbState();
+      cloudState = isValidDatabaseState(local) ? local : createInitialSeedState();
+    }
+
+    // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
+    if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt && !force) {
+      return global._corgiDbState;
     }
 
     // Reconcile relational 'policies' to guarantee newly created policies never vanish
@@ -306,15 +327,19 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
             snapshotRepaired = true;
           } else {
             const existing = cloudState.policies[existingIdx];
-            if (row.status && row.status !== existing.status) {
-              existing.status = row.status as Policy['status'];
-              snapshotRepaired = true;
-            }
-            if (row.collected_premium_cents !== undefined) {
-              const collectedDollars = centsToDollars(Number(row.collected_premium_cents));
-              if (collectedDollars !== existing.collectedPremium) {
-                existing.collectedPremium = collectedDollars;
+            const rowTime = row.recorded_at ? new Date(String(row.recorded_at)).getTime() : 0;
+            const existingTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+            if (rowTime > existingTime) {
+              if (row.status && row.status !== existing.status) {
+                existing.status = row.status as Policy['status'];
                 snapshotRepaired = true;
+              }
+              if (row.collected_premium_cents !== undefined) {
+                const collectedDollars = centsToDollars(Number(row.collected_premium_cents));
+                if (collectedDollars !== existing.collectedPremium) {
+                  existing.collectedPremium = collectedDollars;
+                  snapshotRepaired = true;
+                }
               }
             }
           }
@@ -324,18 +349,12 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
       console.warn('Relational policy reconciliation warning:', mergeErr);
     }
 
-    // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
-    if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt && !snapshotRepaired && !force) {
-      return global._corgiDbState;
-    }
-
     global._corgiDbState = cloudState;
     _hasHydratedFromCloud = true;
     _lastLocalMutationTimestamp = Math.max(cloudUpdatedAt, Date.now());
 
     if (snapshotRepaired) {
-      // Asynchronously repair ACTIVE_SNAPSHOT with the complete merged policies
-      void supabase.from('corgi_system_state').upsert(
+      const { error: repairErr } = await supabase.from('corgi_system_state').upsert(
         {
           key: 'ACTIVE_SNAPSHOT',
           state: cloudState,
@@ -343,6 +362,9 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
         },
         { onConflict: 'key' }
       );
+      if (repairErr) {
+        console.warn('Supabase ACTIVE_SNAPSHOT repair warning:', repairErr.message);
+      }
     }
 
     try {
@@ -375,7 +397,7 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
     if (!supabase) return;
 
     // 1. Snapshot sync
-    await supabase.from('corgi_system_state').upsert(
+    const { error: snapErr } = await supabase.from('corgi_system_state').upsert(
       {
         key: 'ACTIVE_SNAPSHOT',
         state: state,
@@ -383,6 +405,7 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
       },
       { onConflict: 'key' }
     );
+    if (snapErr) console.warn('Supabase snapshot sync warning:', snapErr.message);
 
     // 2. Policies sync
     const policyRows = state.policies.map((p) => ({
@@ -415,7 +438,8 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
       endorsements: p.endorsements || [],
       recorded_at: p.updatedAt ? `${p.updatedAt}T00:00:00Z` : new Date().toISOString(),
     }));
-    await supabase.from('policies').upsert(policyRows, { onConflict: 'id' });
+    const { error: polErr } = await supabase.from('policies').upsert(policyRows, { onConflict: 'id' });
+    if (polErr) console.warn('Supabase policies sync warning:', polErr.message);
 
     // 3. Payments sync
     const paymentRows = state.payments.map((pay) => ({
@@ -554,6 +578,11 @@ export async function runDbTransaction<T>(
   }
 }
 
+/**
+ * Resets the active database state back to initial seed data, persisting to disk and cloud.
+ *
+ * @returns The newly initialized database seed state snapshot.
+ */
 export async function resetDatabaseToSeed(): Promise<CorgiDatabaseState> {
   const fresh = createInitialSeedState();
   global._corgiDbState = fresh;
@@ -561,6 +590,13 @@ export async function resetDatabaseToSeed(): Promise<CorgiDatabaseState> {
   return fresh;
 }
 
+/**
+ * Appends an audit log record to in-memory state tracking security and business transactions.
+ *
+ * @param state - Active database state snapshot.
+ * @param params - Audit record attributes including actor, action, entity, and metadata.
+ * @returns The newly created AuditLogRecord.
+ */
 function appendAuditLog(
   state: CorgiDatabaseState,
   params: {
@@ -1265,35 +1301,37 @@ export async function processVerifiedStripeWebhookInDb(params: {
       payment.refundedAmount = centsToDollars(amountCents);
       payment.refundedAt = nowIso;
 
-      const refundJournal = postBalancedJournalEntryInState(state, {
-        reference: payment.stripePaymentIntentId,
-        referenceType: 'REVERSAL',
-        description: `Verified Stripe refund (${params.stripeEventId}) for ${payment.policyNumber} — ${payment.customerName}`,
-        effectiveDate: nowIso.slice(0, 10),
-        actor,
-        lines: [
-          {
-            accountCode: '2300',
-            accountName: 'Return Premiums & Refunds Payable',
-            debitCents: amountCents,
-            creditCents: 0,
-            memo: `Return premium refund settled (${payment.stripePaymentIntentId})`,
-          },
-          {
-            accountCode: '1020',
-            accountName: 'Stripe Settlement Clearing',
-            debitCents: 0,
-            creditCents: amountCents,
-            memo: `Stripe refund outflow (${payment.stripePaymentIntentId})`,
-          },
-        ],
-      });
-      createdJournals.push(refundJournal);
+      if (transition.shouldPostJournal) {
+        const refundJournal = postBalancedJournalEntryInState(state, {
+          reference: payment.stripePaymentIntentId,
+          referenceType: 'REVERSAL',
+          description: `Verified Stripe refund (${params.stripeEventId}) for ${payment.policyNumber} — ${payment.customerName}`,
+          effectiveDate: nowIso.slice(0, 10),
+          actor,
+          lines: [
+            {
+              accountCode: '2300',
+              accountName: 'Return Premiums & Refunds Payable',
+              debitCents: amountCents,
+              creditCents: 0,
+              memo: `Return premium refund settled (${payment.stripePaymentIntentId})`,
+            },
+            {
+              accountCode: '1020',
+              accountName: 'Stripe Settlement Clearing',
+              debitCents: 0,
+              creditCents: amountCents,
+              memo: `Stripe refund outflow (${payment.stripePaymentIntentId})`,
+            },
+          ],
+        });
+        createdJournals.push(refundJournal);
 
-      const policy = state.policies.find((p) => p.id === payment.policyId);
-      if (policy) {
-        const nextCollectedCents = Math.max(0, dollarsToCents(policy.collectedPremium) - amountCents);
-        policy.collectedPremium = centsToDollars(nextCollectedCents);
+        const policy = state.policies.find((p) => p.id === payment.policyId);
+        if (policy) {
+          const nextCollectedCents = Math.max(0, dollarsToCents(policy.collectedPremium) - amountCents);
+          policy.collectedPremium = centsToDollars(nextCollectedCents);
+        }
       }
     } else if (params.eventType === 'payment_intent.payment_failed') {
       payment.status = 'Failed';
@@ -1870,6 +1908,30 @@ export async function decideApprovalInDb(params: {
         if (stripeRefund.status === 'succeeded' && nextRefundedCents >= dollarsToCents(targetPayment.amount)) {
           targetPayment.status = 'Refunded';
           targetPayment.refundedAt = new Date().toISOString();
+        }
+
+        // Register processed Stripe refund ID to deduplicate subsequent webhook deliveries
+        if (stripeRefund.refundId) {
+          state.webhookEvents.unshift({
+            id: `wh-appr-${Date.now()}`,
+            stripeEventId: stripeRefund.refundId,
+            eventType: 'charge.refunded',
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+            status: 'PROCESSED',
+            processedAt: new Date().toISOString(),
+            recordedAt: new Date().toISOString(),
+            summary: `Approved refund (${req.referenceNumber}) processed with Stripe refund ID ${stripeRefund.refundId}.`,
+          });
+          state.webhookEvents.unshift({
+            id: `wh-appr-evt-${Date.now()}`,
+            stripeEventId: `evt_refund_${stripeRefund.refundId.slice(-10)}`,
+            eventType: 'charge.refunded',
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+            status: 'PROCESSED',
+            processedAt: new Date().toISOString(),
+            recordedAt: new Date().toISOString(),
+            summary: `Approved refund event token registered for ${req.referenceNumber}.`,
+          });
         }
 
         const lines: {

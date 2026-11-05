@@ -53,6 +53,16 @@ export async function POST(req: NextRequest) {
       idempotencyKey: `refund_${payment.stripePaymentIntentId}`,
     });
 
+    if (
+      stripeRefund.error ||
+      (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending')
+    ) {
+      return NextResponse.json(
+        { error: stripeRefund.error || `Stripe refund failed with status: ${stripeRefund.status}` },
+        { status: 422 }
+      );
+    }
+
     const webhookResult = await processVerifiedStripeWebhookInDb({
       stripeEventId: `evt_refund_${stripeRefund.refundId.slice(-10)}`,
       eventType: 'charge.refunded',

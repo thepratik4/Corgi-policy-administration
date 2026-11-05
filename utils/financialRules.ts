@@ -255,8 +255,16 @@ export function evaluateWebhookEventTransition(params: {
     };
   }
 
-  // Out-of-order protection: terminal or advanced states cannot be downgraded
-  if (currentPaymentStatus === 'Refunded' && eventType !== 'charge.refunded') {
+  // Out-of-order and duplication protection: terminal or advanced states cannot be downgraded
+  if (currentPaymentStatus === 'Refunded') {
+    if (eventType === 'charge.refunded') {
+      return {
+        action: 'DUPLICATE_IGNORED',
+        nextPaymentStatus: 'Refunded',
+        shouldPostJournal: false,
+        reason: 'Payment is already in terminal state Refunded; skipping duplicate refund reversal journal.',
+      };
+    }
     return {
       action: 'OUT_OF_ORDER_IGNORED',
       nextPaymentStatus: 'Refunded',

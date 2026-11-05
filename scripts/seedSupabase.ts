@@ -9,6 +9,9 @@ if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
   process.loadEnvFile(path.join(process.cwd(), '.env.local'));
 }
 
+/**
+ * Main seeding routine for populating initial ledger, policy, payment, and reconciliation state into Supabase.
+ */
 async function main() {
   console.log('Connecting to Supabase...');
   const supabase = getSupabaseClient();
@@ -317,8 +320,23 @@ async function main() {
   if (reconError) console.error('Error seeding reconciliation items:', reconError.message);
   else console.log(`Seeded ${reconRows.length} reconciliation items.`);
 
+  const seedFailures: string[] = [];
+  if (brokerError) seedFailures.push(`brokers: ${brokerError.message}`);
+  if (policyError) seedFailures.push(`policies: ${policyError.message}`);
+  if (paymentError) seedFailures.push(`payments: ${paymentError.message}`);
+  if (claimError) seedFailures.push(`claims: ${claimError.message}`);
+  if (journalError) seedFailures.push(`journal_entries: ${journalError.message}`);
+  if (linesError) seedFailures.push(`journal_lines: ${linesError.message}`);
+  if (apprError) seedFailures.push(`approval_requests: ${apprError.message}`);
+  if (reconError) seedFailures.push(`reconciliation_items: ${reconError.message}`);
+
+  if (seedFailures.length > 0) {
+    console.error('Relational seeding aborted due to table errors:\n' + seedFailures.join('\n'));
+    process.exit(1);
+  }
+
   // 9. Relational Seed Completion Tracking
-  await supabase.from('corgi_system_state').upsert(
+  const { error: markerError } = await supabase.from('corgi_system_state').upsert(
     {
       key: 'RELATIONAL_SEED_COMPLETED',
       state: {
@@ -328,7 +346,8 @@ async function main() {
           'policies',
           'payments',
           'claims',
-          'ledger_transactions',
+          'journal_entries',
+          'journal_lines',
           'approval_requests',
           'reconciliation_items',
         ],
@@ -337,6 +356,11 @@ async function main() {
     },
     { onConflict: 'key' }
   );
+
+  if (markerError) {
+    console.error('Failed to write RELATIONAL_SEED_COMPLETED marker:', markerError.message);
+    process.exit(1);
+  }
 
   console.log('\nSupabase cloud database seed complete! All tables and state snapshot populated.');
 }
