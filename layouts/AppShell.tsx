@@ -139,89 +139,77 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        {/* Corgi Statutory Audit Pack Card (Matches Reference Sidebar Promo Card) */}
-        <div className="px-3 pb-3">
-          <div className="rounded-2xl bg-[#0F172A] text-white p-4 relative overflow-hidden">
-            <svg
-              aria-hidden="true"
-              className="absolute -right-6 -bottom-6 w-28 h-28 text-[#EA580C]/25 pointer-events-none"
-              viewBox="0 0 100 100"
-              fill="none"
-            >
-              <circle cx="65" cy="65" r="42" stroke="currentColor" strokeWidth="8" />
-              <circle cx="65" cy="65" r="24" stroke="currentColor" strokeWidth="6" />
-            </svg>
-            <p className="text-xs font-bold font-display text-white relative z-10">
-              Statutory Audit Pack
-            </p>
-            <p className="text-[11px] text-slate-300 mt-0.5 leading-snug relative z-10">
-              NAIC &amp; GAAP subledger trial balance schedule
-            </p>
-            <button
-              type="button"
-              onClick={() => navigateTo('ledger')}
-              className="mt-3 w-full py-1.5 px-3 rounded-full bg-gradient-to-r from-[#EA580C] to-[#C2410C] hover:from-[#C2410C] hover:to-[#9A3412] text-white text-[11px] font-semibold transition-all relative z-10"
-            >
-              Open Ledger Schedule
-            </button>
-          </div>
-        </div>
 
-        {/* Active User & Demo Role Switcher Footer */}
+        {/* Active User & Demo Role Switcher Card (Styled with Dark Corgi Aesthetic) */}
         {currentUser && (
-          <div className="p-4 border-t border-slate-200 bg-slate-50/60 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-slate-900 text-white text-xs font-semibold flex items-center justify-center shrink-0">
-                  {currentUser.avatarInitials}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-slate-900 truncate">
-                    {currentUser.name}
-                  </p>
-                  <p className="text-[11px] text-slate-500 truncate">
-                    {currentUser.roleLabel}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={logout}
-                aria-label="Sign out of demo session"
-                title="Sign out"
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-lg transition-colors shrink-0"
+          <div className="p-3 border-t border-slate-200">
+            <div className="rounded-2xl bg-[#0F172A] text-white p-3.5 relative overflow-hidden shadow-sm">
+              <svg
+                aria-hidden="true"
+                className="absolute -right-6 -bottom-6 w-28 h-28 text-[#EA580C]/20 pointer-events-none"
+                viewBox="0 0 100 100"
+                fill="none"
               >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
+                <circle cx="65" cy="65" r="42" stroke="currentColor" strokeWidth="8" />
+                <circle cx="65" cy="65" r="24" stroke="currentColor" strokeWidth="6" />
+              </svg>
 
-            <div className="pt-2 border-t border-slate-200/80">
-              <p className="text-[11px] text-slate-500 mb-1.5">
-                Active Demo Role
-              </p>
-              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-200/70 rounded-lg">
+              {/* User Header */}
+              <div className="flex items-center justify-between gap-2 relative z-10">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-slate-800 text-white text-xs font-bold flex items-center justify-center ring-1 ring-white/10 shrink-0">
+                    {currentUser.avatarInitials}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-white truncate font-display">
+                      {currentUser.name}
+                    </p>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      {currentUser.roleLabel}
+                    </p>
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={() => switchRole('OPERATIONS_ADMIN')}
-                  className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
-                    currentUser.role === 'OPERATIONS_ADMIN'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  onClick={logout}
+                  aria-label="Sign out of demo session"
+                  title="Sign out"
+                  className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0"
                 >
-                  Ops Admin
+                  <LogOut className="w-3.5 h-3.5" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => switchRole('FINANCE_APPROVER')}
-                  className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
-                    currentUser.role === 'FINANCE_APPROVER'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Finance Approver
-                </button>
+              </div>
+
+              {/* Demo Role Switcher Controls */}
+              <div className="pt-2.5 mt-2.5 border-t border-white/10 relative z-10">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Active Demo Role
+                </p>
+                <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900/90 rounded-xl border border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => switchRole('OPERATIONS_ADMIN')}
+                    className={`px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-all whitespace-nowrap text-center ${
+                      currentUser.role === 'OPERATIONS_ADMIN'
+                        ? 'bg-[#EA580C] text-white shadow-xs'
+                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Ops Admin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchRole('FINANCE_APPROVER')}
+                    title="Finance Approver"
+                    className={`px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-all whitespace-nowrap text-center ${
+                      currentUser.role === 'FINANCE_APPROVER'
+                        ? 'bg-[#EA580C] text-white shadow-xs'
+                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Fin Approver
+                  </button>
+                </div>
               </div>
             </div>
           </div>

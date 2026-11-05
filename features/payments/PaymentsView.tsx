@@ -17,6 +17,7 @@ import {
   Webhook,
   CheckCircle2,
   Repeat,
+  Loader2,
 } from 'lucide-react';
 
 const PAYMENT_STATUS_FILTERS: ('All' | PaymentStatus)[] = [
@@ -50,6 +51,8 @@ export function PaymentsView() {
   const [paymentMethod, setPaymentMethod] = useState('Visa •••• 4242 (Stripe Test Card pm_card_visa)');
   const [intentSubmitting, setIntentSubmitting] = useState(false);
   const [intentError, setIntentError] = useState('');
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [verifyingAll, setVerifyingAll] = useState(false);
 
   const filteredPayments = useMemo(() => {
     return payments.filter((p) => {
@@ -97,6 +100,30 @@ export function PaymentsView() {
     }
   };
 
+  const handleVerifyPending = async (pay: Payment) => {
+    setVerifyingId(pay.stripePaymentIntentId);
+    await dispatchSignedStripeWebhook({
+      paymentIntentId: pay.stripePaymentIntentId,
+      eventType: 'payment_intent.succeeded',
+      amountDollars: pay.amount,
+    });
+    setVerifyingId(null);
+  };
+
+  const handleVerifyAllPending = async () => {
+    const pendingList = payments.filter((p) => p.status === 'Pending');
+    if (pendingList.length === 0) return;
+    setVerifyingAll(true);
+    for (const p of pendingList) {
+      await dispatchSignedStripeWebhook({
+        paymentIntentId: p.stripePaymentIntentId,
+        eventType: 'payment_intent.succeeded',
+        amountDollars: p.amount,
+      });
+    }
+    setVerifyingAll(false);
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -104,27 +131,44 @@ export function PaymentsView() {
         title="Payments (Stripe Sandbox)"
         subtitle="Initiate Stripe test-mode PaymentIntents, verify signed raw-body webhooks, and enforce idempotent double-entry cash clearing."
         actions={
-          <button
-            type="button"
-            onClick={() => {
-              const defaultPol =
-                policies.find((p) => p.collectedPremium < p.writtenPremium) || policies[0];
-              if (defaultPol) {
-                setSelectedPolicyId(defaultPol.id);
-                const remaining = Math.max(
-                  1000,
-                  defaultPol.writtenPremium - defaultPol.collectedPremium
-                );
-                setPaymentAmount(String(remaining));
-              }
-              setIntentError('');
-              setCreateIntentOpen(true);
-            }}
-            className="px-4 py-2 text-xs font-semibold text-white bg-[#EA580C] hover:bg-[#C2410C] rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Initiate Stripe Test Payment</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {payments.some((p) => p.status === 'Pending') && (
+              <button
+                type="button"
+                disabled={verifyingAll}
+                onClick={handleVerifyAllPending}
+                className="px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-60 shadow-xs"
+              >
+                {verifyingAll ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                )}
+                <span>Auto-Verify All Pending ({payments.filter((p) => p.status === 'Pending').length})</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const defaultPol =
+                  policies.find((p) => p.collectedPremium < p.writtenPremium) || policies[0];
+                if (defaultPol) {
+                  setSelectedPolicyId(defaultPol.id);
+                  const remaining = Math.max(
+                    1000,
+                    defaultPol.writtenPremium - defaultPol.collectedPremium
+                  );
+                  setPaymentAmount(String(remaining));
+                }
+                setIntentError('');
+                setCreateIntentOpen(true);
+              }}
+              className="px-4 py-2 text-xs font-semibold text-white bg-[#EA580C] hover:bg-[#C2410C] rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Initiate Stripe Test Payment</span>
+            </button>
+          </div>
         }
       />
 
@@ -264,17 +308,21 @@ export function PaymentsView() {
                       {pay.status === 'Pending' && (
                         <button
                           type="button"
-                          onClick={() =>
-                            dispatchSignedStripeWebhook({
-                              paymentIntentId: pay.stripePaymentIntentId,
-                              eventType: 'payment_intent.succeeded',
-                              amountDollars: pay.amount,
-                            })
-                          }
-                          className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md inline-flex items-center gap-1"
+                          disabled={verifyingId === pay.stripePaymentIntentId || verifyingAll}
+                          onClick={() => handleVerifyPending(pay)}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 rounded-md inline-flex items-center gap-1 shadow-xs transition-all active:scale-95"
                         >
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Verify Webhook</span>
+                          {verifyingId === pay.stripePaymentIntentId || verifyingAll ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <span>Verifying...</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Verify Webhook</span>
+                            </>
+                          )}
                         </button>
                       )}
                       {pay.status === 'Succeeded' && (

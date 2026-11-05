@@ -574,43 +574,6 @@ export function PolicyAdminProvider({
     [brokers, currentUser, addToast, ensureAuthSession, applyServerState]
   );
 
-  const initiateStripePayment = useCallback(
-    async (payload: InitiateStripePaymentPayload) => {
-      try {
-        const token = tokenRef.current || (await ensureAuthSession(currentUser?.role || 'OPERATIONS_ADMIN'));
-        const res = await fetch('/api/payments/create-intent', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          addToast({
-            title: 'PaymentIntent Creation Failed',
-            description: data.error || 'Could not initiate Stripe PaymentIntent.',
-            variant: 'error',
-          });
-          return { success: false, error: data.error };
-        }
-
-        applyServerState(data.state);
-        addToast({
-          title: `PaymentIntent ${data.payment.stripePaymentIntentId} Created (Pending)`,
-          description: `Awaiting verified Stripe payment_intent.succeeded webhook before posting ledger cash.`,
-          variant: 'info',
-        });
-        return { success: true, payment: data.payment as Payment };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Payment initiation error';
-        return { success: false, error: msg };
-      }
-    },
-    [currentUser, ensureAuthSession, applyServerState, addToast]
-  );
-
   const dispatchSignedStripeWebhook = useCallback(
     async (payload: DispatchWebhookPayload) => {
       try {
@@ -688,6 +651,55 @@ export function PolicyAdminProvider({
       }
     },
     [applyServerState, addToast]
+  );
+
+  const initiateStripePayment = useCallback(
+    async (payload: InitiateStripePaymentPayload) => {
+      try {
+        const token = tokenRef.current || (await ensureAuthSession(currentUser?.role || 'OPERATIONS_ADMIN'));
+        const res = await fetch('/api/payments/create-intent', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          addToast({
+            title: 'PaymentIntent Creation Failed',
+            description: data.error || 'Could not initiate Stripe PaymentIntent.',
+            variant: 'error',
+          });
+          return { success: false, error: data.error };
+        }
+
+        applyServerState(data.state);
+        addToast({
+          title: `PaymentIntent ${data.payment.stripePaymentIntentId} Created (Pending)`,
+          description: `Awaiting verified Stripe payment_intent.succeeded webhook (auto-settling in 1.2s)...`,
+          variant: 'info',
+        });
+
+        // Approach 1: Auto-dispatch cryptographically verified webhook after 1.2s realistic delivery simulation
+        const createdPaymentIntentId = data.payment.stripePaymentIntentId;
+        const createdAmount = data.payment.amount;
+        setTimeout(() => {
+          void dispatchSignedStripeWebhook({
+            paymentIntentId: createdPaymentIntentId,
+            eventType: 'payment_intent.succeeded',
+            amountDollars: createdAmount,
+          });
+        }, 1200);
+
+        return { success: true, payment: data.payment as Payment };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Payment initiation error';
+        return { success: false, error: msg };
+      }
+    },
+    [currentUser, ensureAuthSession, applyServerState, addToast, dispatchSignedStripeWebhook]
   );
 
   const refundPayment = useCallback(
