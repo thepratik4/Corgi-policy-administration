@@ -15,6 +15,7 @@ import {
   reverseAndRebookJournalInDb,
   cancelPolicyInDb,
   decideApprovalInDb,
+  requestClaimPayoutInDb,
 } from '../lib/serverDatabase';
 import { validateDoubleEntryBalance } from './financialRules';
 import { escapeHtml } from './reinsuranceSchedule';
@@ -366,4 +367,88 @@ test('issuePolicyInDb and payment intent: policy is persisted and found by both 
   assert.equal(payment.status, 'Pending');
   assert.equal(payment.amount, 45000);
   assert.equal(payment.policyNumber, result.policy.policyNumber);
+});
+
+test('requestClaimPayoutInDb and decideApprovalInDb: validates limits, queues dual-control request, and disburses cash on approval', async () => {
+  await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+  const finUser = DEMO_USERS.FINANCE_APPROVER;
+
+  const state = getDbState();
+  const targetClaim = state.claims.find((c) => c.status === 'Open' && c.outstandingReserve > 0);
+  assert.ok(targetClaim);
+
+  // Attempting payout exceeding outstanding reserve MUST fail
+  await assert.rejects(
+    async () =>
+      await requestClaimPayoutInDb({
+        claimId: targetClaim.id,
+        amountDollars: targetClaim.outstandingReserve + 5000,
+        reason: 'Over-reserve claim payout',
+        actor: opsUser,
+      }),
+    /cannot exceed outstanding case reserve/
+  );
+
+  // Valid payout request
+  const payoutAmt = Math.min(25000, targetClaim.outstandingReserve);
+  const approval = await requestClaimPayoutInDb({
+    claimId: targetClaim.id,
+    amountDollars: payoutAmt,
+    reason: `Indemnity disbursement invoice #INV-TEST for ${targetClaim.claimNumber}`,
+    actor: opsUser,
+  });
+
+  assert.ok(approval);
+  assert.equal(approval.actionType, 'Claim Payout Release');
+  assert.equal(approval.amount, payoutAmt);
+  assert.equal(approval.status, 'Pending');
+
+  // Verify claim updated to Under Review & Pending Approval
+  const claimAfterReq = getDbState().claims.find((c) => c.id === targetClaim.id);
+  assert.ok(claimAfterReq);
+  assert.equal(claimAfterReq.status, 'Under Review');
+  assert.equal(claimAfterReq.payoutStatus, 'Pending Approval');
+
+  // Second payout request on same claim MUST be rejected as duplicate pending
+  await assert.rejects(
+    async () =>
+      await requestClaimPayoutInDb({
+        claimId: targetClaim.id,
+        amountDollars: 1000,
+        reason: 'Second duplicate request',
+        actor: opsUser,
+      }),
+    /already pending/
+  );
+
+  // Approving through Finance Approver
+  const prevReserve = targetClaim.outstandingReserve;
+  const prevPaid = targetClaim.paidAmount;
+
+  await decideApprovalInDb({
+    requestId: approval.id,
+    decision: 'Approved',
+    note: 'Authorized after invoice verification',
+    actor: finUser,
+  });
+
+  const claimAfterApprove = getDbState().claims.find((c) => c.id === targetClaim.id);
+  assert.ok(claimAfterApprove);
+  assert.equal(claimAfterApprove.paidAmount, prevPaid + payoutAmt);
+  assert.equal(claimAfterApprove.outstandingReserve, prevReserve - payoutAmt);
+  if (prevReserve - payoutAmt === 0) {
+    assert.equal(claimAfterApprove.status, 'Settled');
+    assert.equal(claimAfterApprove.payoutStatus, 'Paid in Full');
+  } else {
+    assert.equal(claimAfterApprove.status, 'Open');
+    assert.equal(claimAfterApprove.payoutStatus, 'Partially Paid');
+  }
+
+  // Verify balanced disbursement journal posted
+  const latestTxn = getDbState().ledgerTransactions[0];
+  assert.ok(latestTxn);
+  assert.equal(latestTxn.reference, targetClaim.claimNumber);
+  const balCheck = validateDoubleEntryBalance(latestTxn.lines);
+  assert.equal(balCheck.isBalanced, true);
 });

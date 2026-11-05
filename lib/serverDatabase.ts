@@ -1756,6 +1756,90 @@ export async function adjustClaimReserveInDb(params: {
 }
 
 /**
+ * Queues a dual-control claim payout release request into the Approval Queue for Finance Approver review.
+ * Enforces that the claim exists, is open/unpaid, and the requested payout does not exceed available case reserve.
+ *
+ * @param params - Request details including claimId, amountDollars, reason, and actor.
+ * @returns The created ApprovalRequest entity.
+ */
+export async function requestClaimPayoutInDb(params: {
+  claimId: string;
+  amountDollars: number;
+  reason: string;
+  actor: DemoUser;
+}): Promise<ApprovalRequest> {
+  return runDbTransaction((state) => {
+    const claim = state.claims.find((c) => c.id === params.claimId);
+    if (!claim) {
+      throw new Error('Claim not found.');
+    }
+    if (claim.status === 'Settled' || claim.payoutStatus === 'Paid in Full') {
+      throw new Error(`Claim ${claim.claimNumber} is already settled.`);
+    }
+
+    const amountCents = dollarsToCents(params.amountDollars);
+    if (amountCents <= 0) {
+      throw new Error('Payout amount must be greater than zero.');
+    }
+
+    const reserveCents = dollarsToCents(claim.outstandingReserve);
+    if (amountCents > reserveCents) {
+      throw new Error(
+        `Payout amount ($${params.amountDollars.toLocaleString()}) cannot exceed outstanding case reserve ($${claim.outstandingReserve.toLocaleString()}).`
+      );
+    }
+
+    const existingPending = state.approvalRequests.find(
+      (a) =>
+        a.targetEntityId === claim.id &&
+        a.actionType === 'Claim Payout Release' &&
+        a.status === 'Pending'
+    );
+    if (existingPending) {
+      throw new Error(
+        `A payout approval request (${existingPending.referenceNumber}) is already pending for claim ${claim.claimNumber}.`
+      );
+    }
+
+    const reqSeq = 410 + state.approvalRequests.length;
+    const approvalRequest: ApprovalRequest = {
+      id: `apr-${reqSeq}`,
+      referenceNumber: `APR-2026-0${reqSeq}`,
+      actionType: 'Claim Payout Release',
+      targetEntityId: claim.id,
+      targetReference: claim.claimNumber,
+      customerName: claim.customerName,
+      amount: params.amountDollars,
+      reason: params.reason.trim(),
+      initiatorEmail: params.actor.email,
+      initiatorName: params.actor.name,
+      initiatorRole: params.actor.role,
+      createdAt: new Date().toISOString(),
+      status: 'Pending',
+    };
+
+    claim.status = 'Under Review';
+    claim.payoutStatus = 'Pending Approval';
+
+    state.approvalRequests.unshift(approvalRequest);
+
+    appendAuditLog(state, {
+      actor: params.actor,
+      action: 'CLAIM_PAYOUT_REQUESTED',
+      entityType: 'CLAIM',
+      entityId: claim.id,
+      metadata: {
+        approvalReference: approvalRequest.referenceNumber,
+        amount: params.amountDollars,
+        reason: params.reason,
+      },
+    });
+
+    return approvalRequest;
+  });
+}
+
+/**
  * Processes a Finance Approver's decision (Approved or Rejected) on a queued financial request.
  * For approved refunds, routes the disbursement through the payment provider (Stripe), verifies
  * confirmation, updates payment tracking, and books the balanced settlement reversal journal entry.
@@ -1794,12 +1878,11 @@ export async function decideApprovalInDb(params: {
       if (req.actionType === 'Claim Payout Release') {
         const claim = state.claims.find((c) => c.id === req.targetEntityId);
         if (claim) {
-          claim.payoutStatus = 'Paid in Full';
-          claim.status = 'Settled';
+          const remainingReserveCents = Math.max(0, dollarsToCents(claim.outstandingReserve) - amountCents);
           claim.paidAmount = centsToDollars(dollarsToCents(claim.paidAmount) + amountCents);
-          claim.outstandingReserve = centsToDollars(
-            Math.max(0, dollarsToCents(claim.outstandingReserve) - amountCents)
-          );
+          claim.outstandingReserve = centsToDollars(remainingReserveCents);
+          claim.payoutStatus = remainingReserveCents === 0 ? 'Paid in Full' : 'Partially Paid';
+          claim.status = remainingReserveCents === 0 ? 'Settled' : 'Open';
           postBalancedJournalEntryInState(state, {
             reference: claim.claimNumber,
             referenceType: 'CLAIM_RESERVE',
@@ -1972,6 +2055,14 @@ export async function decideApprovalInDb(params: {
           actor: params.actor,
           lines,
         });
+      }
+    } else if (params.decision === 'Rejected') {
+      if (req.actionType === 'Claim Payout Release') {
+        const claim = state.claims.find((c) => c.id === req.targetEntityId);
+        if (claim && claim.payoutStatus === 'Pending Approval') {
+          claim.payoutStatus = claim.paidAmount > 0 ? 'Partially Paid' : 'Unpaid';
+          claim.status = 'Open';
+        }
       }
     }
 
