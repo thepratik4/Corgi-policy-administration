@@ -53,6 +53,8 @@ export interface Policy {
   status: PolicyStatus;
   bindDate?: string;
   cancellationDate?: string;
+  cancellationType?: 'PRO_RATA' | 'SHORT_RATE';
+  shortRatePenaltyAmount?: number;
   aggregateCoverageLimit: number;
   perOccurrenceLimit: number;
   deductible: number;
@@ -226,6 +228,8 @@ export interface ApprovalRequest {
   initiatorRole: UserRole;
   createdAt: string;
   status: ApprovalStatus;
+  cancellationType?: 'PRO_RATA' | 'SHORT_RATE';
+  shortRatePenaltyAmount?: number;
   decidedByEmail?: string;
   decidedByName?: string;
   decidedAt?: string;

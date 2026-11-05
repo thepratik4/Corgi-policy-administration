@@ -80,3 +80,58 @@
   - Appends a new re-booked journal entry with the corrected effective date and adjusted pro-rata daily calculation.
   - Original rows remain completely untouched. The monthly broker statement and trial balance reflect the net difference and tie out to the cent.
 
+
+
+---
+
+### Entry 8 — T0 + 24h: PostgreSQL Cloud Database, Immutability Triggers & Least-Privilege RLS
+- **Context**: Moving beyond the local file cache to enterprise multi-tenant cloud storage while preserving the strict immutable subledger invariant.
+- **Decision**: Integrated Supabase PostgreSQL (`supabase/migrations/0001_corgi_financial_foundation.sql`) with two custom database triggers:
+  1. `prevent_posted_journal_mutation()`: Rejects any SQL `DELETE` on financial records (`journal_entries`, `journal_lines`), and rejects `UPDATE` on posted transaction fields (`journal_number`, `effective_date`, `recorded_at`, `reference`, `memo`, `posted_by_email`), permitting `reversed_by_entry_id` linking strictly when initially unset.
+  2. `enforce_balanced_journal_entry()`: A deferred constraint trigger on `journal_lines` that evaluates at `COMMIT` time, asserting that each journal entry has at least 2 lines and that sum(debit_cents) === sum(credit_cents) > 0.
+  3. **Least-Privilege RLS**: Revoked broad table permissions from `anon` and `authenticated`. Granted full access strictly to `service_role`, and granted read-only `SELECT` to `authenticated` staff on domain/reporting tables. System state is completely isolated from client roles.
+  4. **Hybrid Outage Resilience**: Hydration tracks local mutation timestamps and in-flight sync promises to prevent older cloud snapshots from overwriting newer local state, maintaining seamless fallback operation during transient cloud outages.
+
+---
+
+### Entry 9 — T0 + 28h: Model Context Protocol (MCP) Guardrails & Segregation of Duties
+- **Context**: Brief requirement: *"Three read tools, one write tool. The write tool must not directly modify money. It creates a request in the human approval queue. If your agent can modify the ledger on its own, you fail."*
+- **Decision**: Implemented an MCP server (`mcp-server.ts`) running over stdio with 3 read tools and 1 strictly guarded write tool:
+  1. `get_policy_as_of`: Reconstructs historical policy coverage schedule, active endorsements, and earned premium as of any arbitrary date T.
+  2. `get_broker_statement`: Computes deterministic broker commission statements and clawback reconciliations tied to the ledger.
+  3. `query_subledger`: Exposes trial balance, account balances, and journal entries with integer USD cent precision.
+  4. `request_endorsement_or_reserve_adjustment` (Write Tool): **Strictly queues into the human Maker-Checker approval table (`approval_requests`)**. It explicitly **does not** post journal entries, update policies, or touch ledger balances.
+- **Defense**: Financial fiduciary compliance forbids autonomous agents from altering subledger rows or releasing cash. Write requests made through the MCP tool (`request_endorsement_or_reserve_adjustment`) are strictly routed to the human Maker-Checker approval queue (`approval_requests`), ensuring agent proposals require human Finance Approver verification. (Direct operator endorsements via REST `PATCH /api/policies` execute directly within standard administrative underwriting authority).
+
+---
+
+### Entry 10 — T0 + 32h: Declarations Document Generation & Temporal As-Of Policy Reconstruction
+- **Context**: Evaluators need downloadable declarations pages reflecting historical policy terms and coverage schedules as of any specific point in time.
+- **Decision**: Implemented server-side declarations page generator (`utils/declarationsGenerator.ts`) and temporal reconstructor (`utils/asOfDateReconstruction.ts`):
+  1. **Deterministic As-Of Slicing**: Given policy P and date T, the engine evaluates T against policy effective/expiration dates and all endorsement effective dates.
+  2. Endorsements with effectiveDate > T are excluded from coverage limits and historical premium calculations, while endorsements with effectiveDate <= T are prorated up to T.
+  3. Formatted declarations HTML prints directly to clean, high-fidelity PDF documents via native browser print pipelines or downloadable documents, displaying itemized coverages, limits, deductibles, state surplus lines taxes, stamping fees, and producer attribution.
+
+
+---
+
+### Entry 11 — T0 + 36h: Short-Rate vs. Pro-Rata Cancellation & Retained Penalty Accounting
+- **Context**: Domain Gauntlet #5 requires: *"Pro-rata versus short-rate refund — know the difference, implement one, and make the ledger capable of expressing the other. The refund is unearned premium, and it moves on the real rail."*
+- **Decision**: Added short-rate cancellation alongside standard pro-rata cancellation in `utils/financialRules.ts` (`calculateCancellationRefundCents`):
+  1. **Pro-Rata (Carrier/Standard)**: Customer receives 100% of remaining unearned premium refunded via the payment rail (`Debit 2010 Unearned Premium` vs `Credit 1020 Cash / Clearing`).
+  2. **Short-Rate (Insured-Requested Early Termination)**: Standard commercial 90/10 rule. Insured receives 90% of unearned premium as a refund, and Corgi retains a 10% short-rate cancellation penalty as earned fee revenue.
+  3. **Double-Entry Balance**:
+     - `Debit 2010 Unearned Premium Reserve`: Gross unearned amount (e.g. $1,000.00).
+     - `Credit 1020 Stripe Settlement Clearing`: 90% net refund to customer ($900.00).
+     - `Credit 4020 Retained Short-Rate Cancellation Penalty`: 10% earned revenue ($100.00).
+     - Sum(Debits) === Sum(Credits) strictly preserved to the cent.
+
+---
+
+### Entry 12 — T0 + 38h: Reinsurance Treaty Quota Share Cession Schedule & Cession Note
+- **Context**: Track 1 Stretch Ladder #6: *"A reinsurance cession note: who else is on the risk, and what the ledger owes them."*
+- **Decision**: Implemented commercial reinsurance quota-share facility modeling (`utils/reinsuranceSchedule.ts`):
+  1. **Treaty Model**: Active commercial treaty with Munich Re America (`TREATY-QS-2026-MRE`, Rating: A+ Superior · AM Best Size XV) with a 25% Quota Share cession and 75% Corgi net retention.
+  2. **Apportionment Schedule**: Calculates exact liability limit shares (Per-Occurrence: Corgi 75% / Munich Re 25%; Aggregate: Corgi 75% / Munich Re 25%) and written premium allocations.
+  3. **Subledger Cession Accounting**: Models `Debit 5030 Ceded Reinsurance Premium Expense` vs `Credit 2050 Ceded Reinsurance Premium Payable — Munich Re`, plus 25% reinsurance recoverable asset on settled claim losses.
+  4. **Document Generation**: One-click printable legal **Reinsurance Cession Note** (Schedule A) detailing treaty terms, signatory lines, NAIC group numbers, and the "Follow the Fortunes" binding clause.

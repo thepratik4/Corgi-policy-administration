@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSupabaseClient } from './supabaseClient';
+import { createStripeRefund } from './stripeService';
 import {
   ApprovalRequest,
   AuditLogRecord,
@@ -29,6 +30,7 @@ import {
 } from '../mocks/seedData';
 import {
   buildReversalJournalLines,
+  calculateCancellationRefundCents,
   calculatePolicyInvoiceBreakdownCents,
   canUserDecideApproval,
   centsToDollars,
@@ -60,6 +62,13 @@ declare global {
   var _corgiDbState: CorgiDatabaseState | undefined;
 }
 
+/**
+ * Creates the deterministic baseline state for the Corgi policy administration platform,
+ * including demo users, brokers, policies, payments, claims, append-only subledger entries,
+ * approval requests, and audit logs.
+ *
+ * @returns The initial in-memory database state.
+ */
 export function createInitialSeedState(): CorgiDatabaseState {
   const nowIso = '2026-11-04T09:00:00Z';
   const initialWebhookEvents: WebhookEventRecord[] = INITIAL_PAYMENTS.map((pay, idx) => ({
@@ -122,12 +131,25 @@ export const REQUIRED_STATE_ARRAYS: readonly (keyof CorgiDatabaseState)[] = [
   'auditLogs',
 ] as const;
 
+/**
+ * Type-guard verifying that an object contains all required top-level domain entity arrays
+ * for a valid CorgiDatabaseState.
+ *
+ * @param obj - The unknown object to validate.
+ * @returns True if the object satisfies CorgiDatabaseState shape.
+ */
 export function isValidDatabaseState(obj: unknown): obj is CorgiDatabaseState {
   if (!obj || typeof obj !== 'object') return false;
   const candidate = obj as Record<string, unknown>;
   return REQUIRED_STATE_ARRAYS.every((key) => Array.isArray(candidate[key]));
 }
 
+/**
+ * Retrieves the active in-memory database state, initializing from disk cache or seed state
+ * if not yet populated in the current process runtime.
+ *
+ * @returns The current database state snapshot.
+ */
 export function getDbState(): CorgiDatabaseState {
   if (global._corgiDbState) {
     return global._corgiDbState;
@@ -156,7 +178,6 @@ export function getDbState(): CorgiDatabaseState {
     fs.writeFileSync(tmpFile, JSON.stringify(fresh, null, 2), 'utf8');
     fs.renameSync(tmpFile, DB_FILE);
   } catch {}
-  void syncStateToSupabase(fresh);
   return fresh;
 }
 
@@ -164,6 +185,11 @@ let _pendingSyncPromise: Promise<void> | null = null;
 let _lastLocalMutationTimestamp = 0;
 let _lastSyncError: Error | null = null;
 
+/**
+ * Persists active database state to local disk cache and initiates cloud sync.
+ *
+ * @param state - The database state snapshot to persist.
+ */
 export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
   _lastLocalMutationTimestamp = Date.now();
 
@@ -192,6 +218,43 @@ export async function persistDbState(state: CorgiDatabaseState): Promise<void> {
       _pendingSyncPromise = null;
     }
   }
+}
+
+/**
+ * Maps a relational database row from the Supabase `policies` table to domain `Policy` model.
+ *
+ * @param row - Relational row object from Supabase.
+ * @returns Structured Policy domain object.
+ */
+function mapRelationalPolicyToDomain(row: Record<string, unknown>): Policy {
+  return {
+    id: String(row.id),
+    policyNumber: String(row.policy_number || row.id),
+    customerName: String(row.customer_name || 'Commercial Policyholder'),
+    customerIndustry: String(row.customer_industry || 'Commercial Enterprise'),
+    customerEin: String(row.customer_ein || '00-0000000'),
+    customerAddress: String(row.customer_address || ''),
+    brokerId: String(row.broker_id || 'brk-101'),
+    brokerName: String(row.broker_name || 'Apex Risk Advisors'),
+    lineOfBusiness: (row.line_of_business as Policy['lineOfBusiness']) || 'Commercial General Liability',
+    status: (row.status as Policy['status']) || 'Active',
+    writtenPremium: centsToDollars(Number(row.written_premium_cents) || 0),
+    taxesAndFees: centsToDollars(Number(row.taxes_and_fees_cents) || 0),
+    earnedPremium: centsToDollars(Number(row.earned_premium_cents) || 0),
+    unearnedPremium: centsToDollars(Number(row.unearned_premium_cents) || 0),
+    collectedPremium: centsToDollars(Number(row.collected_premium_cents) || 0),
+    aggregateCoverageLimit: centsToDollars(Number(row.aggregate_limit_cents) || 0),
+    perOccurrenceLimit: centsToDollars(Number(row.occurrence_limit_cents) || 0),
+    deductible: centsToDollars(Number(row.deductible_cents) || 0),
+    effectiveDate: String(row.effective_date || new Date().toISOString().slice(0, 10)),
+    expirationDate: String(row.expiration_date || new Date().toISOString().slice(0, 10)),
+    bindDate: row.bind_date ? String(row.bind_date) : undefined,
+    cancellationDate: row.cancellation_date ? String(row.cancellation_date) : undefined,
+    underwriter: String(row.underwriter || 'Underwriting Operations'),
+    coverages: Array.isArray(row.coverages) ? (row.coverages as Policy['coverages']) : [],
+    endorsements: Array.isArray(row.endorsements) ? (row.endorsements as Policy['endorsements']) : [],
+    updatedAt: (row.recorded_at ? String(row.recorded_at) : new Date().toISOString()).slice(0, 10),
+  };
 }
 
 let _hasHydratedFromCloud = false;
@@ -224,30 +287,96 @@ export async function hydrateStateFromSupabaseIfAvailable(force = false): Promis
       .eq('key', 'ACTIVE_SNAPSHOT')
       .maybeSingle();
 
-    if (!error && data?.state && isValidDatabaseState(data.state)) {
-      const cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
-
-      // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
-      if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt) {
-        return global._corgiDbState;
-      }
-
-      const cloudState = data.state;
-      global._corgiDbState = cloudState;
-      _hasHydratedFromCloud = true;
-      _lastLocalMutationTimestamp = cloudUpdatedAt || Date.now();
-
-      try {
-        if (!fs.existsSync(DATA_DIR)) {
-          fs.mkdirSync(DATA_DIR, { recursive: true });
-        }
-        const tmpFile = `${DB_FILE}.tmp`;
-        fs.writeFileSync(tmpFile, JSON.stringify(cloudState, null, 2), 'utf8');
-        fs.renameSync(tmpFile, DB_FILE);
-      } catch {}
-
-      return cloudState;
+    if (error) {
+      console.warn('Hydration notice (cloud read failed):', error.message);
+      return null;
     }
+
+    let cloudState: CorgiDatabaseState | null = null;
+    let cloudUpdatedAt = 0;
+
+    if (data?.state && isValidDatabaseState(data.state)) {
+      cloudState = data.state;
+      cloudUpdatedAt = data.updated_at ? new Date(data.updated_at).getTime() : 0;
+    } else {
+      // Successful query with no row: check local disk cache before falling back to seed
+      const local = getDbState();
+      cloudState = isValidDatabaseState(local) ? local : createInitialSeedState();
+    }
+
+    // Guard: Do not overwrite newer local in-memory state with an older cloud snapshot
+    if (global._corgiDbState && _lastLocalMutationTimestamp > cloudUpdatedAt && !force) {
+      return global._corgiDbState;
+    }
+
+    // Reconcile relational 'policies' to guarantee newly created policies never vanish
+    let snapshotRepaired = false;
+    try {
+      const { data: relationalPolicies, error: polErr } = await supabase
+        .from('policies')
+        .select('*');
+
+      if (!polErr && Array.isArray(relationalPolicies) && relationalPolicies.length > 0) {
+        for (const row of relationalPolicies) {
+          const existingIdx = cloudState.policies.findIndex(
+            (p) => p.id === row.id || p.policyNumber === row.policy_number
+          );
+          if (existingIdx === -1) {
+            const mapped = mapRelationalPolicyToDomain(row as Record<string, unknown>);
+            cloudState.policies.unshift(mapped);
+            snapshotRepaired = true;
+          } else {
+            const existing = cloudState.policies[existingIdx];
+            const rowTime = row.recorded_at ? new Date(String(row.recorded_at)).getTime() : 0;
+            const existingTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+            if (rowTime > existingTime) {
+              if (row.status && row.status !== existing.status) {
+                existing.status = row.status as Policy['status'];
+                snapshotRepaired = true;
+              }
+              if (row.collected_premium_cents !== undefined) {
+                const collectedDollars = centsToDollars(Number(row.collected_premium_cents));
+                if (collectedDollars !== existing.collectedPremium) {
+                  existing.collectedPremium = collectedDollars;
+                  snapshotRepaired = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (mergeErr) {
+      console.warn('Relational policy reconciliation warning:', mergeErr);
+    }
+
+    global._corgiDbState = cloudState;
+    _hasHydratedFromCloud = true;
+    _lastLocalMutationTimestamp = Math.max(cloudUpdatedAt, Date.now());
+
+    if (snapshotRepaired) {
+      const { error: repairErr } = await supabase.from('corgi_system_state').upsert(
+        {
+          key: 'ACTIVE_SNAPSHOT',
+          state: cloudState,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (repairErr) {
+        console.warn('Supabase ACTIVE_SNAPSHOT repair warning:', repairErr.message);
+      }
+    }
+
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const tmpFile = `${DB_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(cloudState, null, 2), 'utf8');
+      fs.renameSync(tmpFile, DB_FILE);
+    } catch {}
+
+    return cloudState;
   } catch (err) {
     // Offline resilience: fallback safely to local cache
     console.warn('Hydration notice (offline fallback active):', err instanceof Error ? err.message : err);
@@ -268,7 +397,7 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
     if (!supabase) return;
 
     // 1. Snapshot sync
-    await supabase.from('corgi_system_state').upsert(
+    const { error: snapErr } = await supabase.from('corgi_system_state').upsert(
       {
         key: 'ACTIVE_SNAPSHOT',
         state: state,
@@ -276,6 +405,7 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
       },
       { onConflict: 'key' }
     );
+    if (snapErr) console.warn('Supabase snapshot sync warning:', snapErr.message);
 
     // 2. Policies sync
     const policyRows = state.policies.map((p) => ({
@@ -308,7 +438,8 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
       endorsements: p.endorsements || [],
       recorded_at: p.updatedAt ? `${p.updatedAt}T00:00:00Z` : new Date().toISOString(),
     }));
-    await supabase.from('policies').upsert(policyRows, { onConflict: 'id' });
+    const { error: polErr } = await supabase.from('policies').upsert(policyRows, { onConflict: 'id' });
+    if (polErr) console.warn('Supabase policies sync warning:', polErr.message);
 
     // 3. Payments sync
     const paymentRows = state.payments.map((pay) => ({
@@ -413,17 +544,28 @@ export async function syncStateToSupabase(state: CorgiDatabaseState): Promise<vo
   }
 }
 
+let _transactionMutex: Promise<void> = Promise.resolve();
+
 /**
  * Executes a database mutation inside an atomic snapshot transaction.
- * If an exception is thrown or validation fails, all changes are rolled back.
+ * Transactions are serialized via an async mutex to prevent concurrent mutations
+ * from clobbering state snapshots. If an exception is thrown or validation fails,
+ * all changes are rolled back cleanly.
  */
 export async function runDbTransaction<T>(
   fn: (state: CorgiDatabaseState) => T | Promise<T>
 ): Promise<T> {
-  await hydrateStateFromSupabaseIfAvailable();
-  const current = getDbState();
-  const snapshot = structuredClone(current);
+  const previous = _transactionMutex;
+  let resolveMutex: () => void;
+  _transactionMutex = new Promise<void>((resolve) => {
+    resolveMutex = resolve;
+  });
+
+  await previous;
   try {
+    await hydrateStateFromSupabaseIfAvailable();
+    const current = getDbState();
+    const snapshot = structuredClone(current);
     const result = await fn(snapshot);
     global._corgiDbState = snapshot;
     await persistDbState(snapshot);
@@ -431,9 +573,16 @@ export async function runDbTransaction<T>(
   } catch (err) {
     // Atomic rollback: global._corgiDbState remains untouched
     throw err;
+  } finally {
+    resolveMutex!();
   }
 }
 
+/**
+ * Resets the active database state back to initial seed data, persisting to disk and cloud.
+ *
+ * @returns The newly initialized database seed state snapshot.
+ */
 export async function resetDatabaseToSeed(): Promise<CorgiDatabaseState> {
   const fresh = createInitialSeedState();
   global._corgiDbState = fresh;
@@ -441,6 +590,13 @@ export async function resetDatabaseToSeed(): Promise<CorgiDatabaseState> {
   return fresh;
 }
 
+/**
+ * Appends an audit log record to in-memory state tracking security and business transactions.
+ *
+ * @param state - Active database state snapshot.
+ * @param params - Audit record attributes including actor, action, entity, and metadata.
+ * @returns The newly created AuditLogRecord.
+ */
 function appendAuditLog(
   state: CorgiDatabaseState,
   params: {
@@ -1145,35 +1301,37 @@ export async function processVerifiedStripeWebhookInDb(params: {
       payment.refundedAmount = centsToDollars(amountCents);
       payment.refundedAt = nowIso;
 
-      const refundJournal = postBalancedJournalEntryInState(state, {
-        reference: payment.stripePaymentIntentId,
-        referenceType: 'REVERSAL',
-        description: `Verified Stripe refund (${params.stripeEventId}) for ${payment.policyNumber} — ${payment.customerName}`,
-        effectiveDate: nowIso.slice(0, 10),
-        actor,
-        lines: [
-          {
-            accountCode: '2300',
-            accountName: 'Return Premiums & Refunds Payable',
-            debitCents: amountCents,
-            creditCents: 0,
-            memo: `Return premium refund settled (${payment.stripePaymentIntentId})`,
-          },
-          {
-            accountCode: '1020',
-            accountName: 'Stripe Settlement Clearing',
-            debitCents: 0,
-            creditCents: amountCents,
-            memo: `Stripe refund outflow (${payment.stripePaymentIntentId})`,
-          },
-        ],
-      });
-      createdJournals.push(refundJournal);
+      if (transition.shouldPostJournal) {
+        const refundJournal = postBalancedJournalEntryInState(state, {
+          reference: payment.stripePaymentIntentId,
+          referenceType: 'REVERSAL',
+          description: `Verified Stripe refund (${params.stripeEventId}) for ${payment.policyNumber} — ${payment.customerName}`,
+          effectiveDate: nowIso.slice(0, 10),
+          actor,
+          lines: [
+            {
+              accountCode: '2300',
+              accountName: 'Return Premiums & Refunds Payable',
+              debitCents: amountCents,
+              creditCents: 0,
+              memo: `Return premium refund settled (${payment.stripePaymentIntentId})`,
+            },
+            {
+              accountCode: '1020',
+              accountName: 'Stripe Settlement Clearing',
+              debitCents: 0,
+              creditCents: amountCents,
+              memo: `Stripe refund outflow (${payment.stripePaymentIntentId})`,
+            },
+          ],
+        });
+        createdJournals.push(refundJournal);
 
-      const policy = state.policies.find((p) => p.id === payment.policyId);
-      if (policy) {
-        const nextCollectedCents = Math.max(0, dollarsToCents(policy.collectedPremium) - amountCents);
-        policy.collectedPremium = centsToDollars(nextCollectedCents);
+        const policy = state.policies.find((p) => p.id === payment.policyId);
+        if (policy) {
+          const nextCollectedCents = Math.max(0, dollarsToCents(policy.collectedPremium) - amountCents);
+          policy.collectedPremium = centsToDollars(nextCollectedCents);
+        }
       }
     } else if (params.eventType === 'payment_intent.payment_failed') {
       payment.status = 'Failed';
@@ -1336,9 +1494,18 @@ export async function createEndorsementInDb(params: {
   });
 }
 
+/**
+ * Cancels an active commercial policy, calculating pro-rata or short-rate refund amounts,
+ * updating policy lifecycle state, and queuing return premium to the Finance Approver queue.
+ * Rejects re-cancellation if the policy is already cancelled.
+ *
+ * @param params - Cancellation parameters including policyId, audit reason, cancellationType, and actor.
+ * @returns The updated cancelled Policy entity.
+ */
 export async function cancelPolicyInDb(params: {
   policyId: string;
   reason: string;
+  cancellationType?: 'PRO_RATA' | 'SHORT_RATE';
   actor: DemoUser;
 }): Promise<Policy> {
   return runDbTransaction((state) => {
@@ -1346,10 +1513,18 @@ export async function cancelPolicyInDb(params: {
     if (!policy) {
       throw new Error('Policy not found.');
     }
+    if (policy.status === 'Cancelled') {
+      throw new Error(`Policy ${policy.policyNumber} is already cancelled.`);
+    }
     const unearnedCents = dollarsToCents(policy.unearnedPremium);
     const cancelIsoDate = new Date().toISOString().slice(0, 10);
+    const cType = params.cancellationType || 'PRO_RATA';
+    const refundCalc = calculateCancellationRefundCents(unearnedCents, cType);
+
     policy.status = 'Cancelled';
     policy.cancellationDate = cancelIsoDate;
+    policy.cancellationType = cType;
+    policy.shortRatePenaltyAmount = centsToDollars(refundCalc.retainedPenaltyCents);
     policy.unearnedPremium = 0;
     policy.updatedAt = cancelIsoDate;
 
@@ -1362,8 +1537,12 @@ export async function cancelPolicyInDb(params: {
         targetEntityId: policy.id,
         targetReference: policy.policyNumber,
         customerName: policy.customerName,
-        amount: centsToDollars(unearnedCents),
-        reason: `Cancellation of ${policy.policyNumber}: ${params.reason}`,
+        amount: centsToDollars(refundCalc.refundCents),
+        cancellationType: cType,
+        shortRatePenaltyAmount: centsToDollars(refundCalc.retainedPenaltyCents),
+        reason: `${cType === 'SHORT_RATE' ? '[SHORT-RATE 90/10] ' : '[PRO-RATA] '}Cancellation of ${policy.policyNumber}: ${params.reason}${
+          cType === 'SHORT_RATE' ? ` (Retained Carrier Penalty: $${centsToDollars(refundCalc.retainedPenaltyCents).toLocaleString()})` : ''
+        }`,
         initiatorEmail: params.actor.email,
         initiatorName: params.actor.name,
         initiatorRole: params.actor.role,
@@ -1377,13 +1556,26 @@ export async function cancelPolicyInDb(params: {
       action: 'POLICY_CANCELLED',
       entityType: 'POLICY',
       entityId: policy.policyNumber,
-      metadata: { reason: params.reason, unearnedReturnCents: unearnedCents },
+      metadata: {
+        reason: params.reason,
+        cancellationType: cType,
+        grossUnearnedCents: refundCalc.grossUnearnedCents,
+        refundCents: refundCalc.refundCents,
+        retainedPenaltyCents: refundCalc.retainedPenaltyCents,
+      },
     });
 
     return policy;
   });
 }
 
+/**
+ * Files a first-notice-of-loss (FNOL) claim against an active commercial policy,
+ * verifying coverage limit constraints and posting an initial double-entry loss reserve entry.
+ *
+ * @param params - Claim details including policyId, lossDate, description, claimedAmount, and initialReserve.
+ * @returns The newly created Claim and associated loss reserve LedgerTransaction.
+ */
 export async function fileClaimInDb(params: {
   policyId: string;
   lossDate: string;
@@ -1473,6 +1665,12 @@ export async function fileClaimInDb(params: {
   });
 }
 
+/**
+ * Adjusts the case loss reserve for an open claim and posts an immutable double-entry journal adjustment.
+ *
+ * @param params - Adjustment details including claimId, newReserveDollars, reason, and actor.
+ * @returns The updated Claim and the balancing LedgerTransaction.
+ */
 export async function adjustClaimReserveInDb(params: {
   claimId: string;
   newReserveDollars: number;
@@ -1557,16 +1755,111 @@ export async function adjustClaimReserveInDb(params: {
   });
 }
 
+/**
+ * Queues a dual-control claim payout release request into the Approval Queue for Finance Approver review.
+ * Enforces that the claim exists, is open/unpaid, and the requested payout does not exceed available case reserve.
+ *
+ * @param params - Request details including claimId, amountDollars, reason, and actor.
+ * @returns The created ApprovalRequest entity.
+ */
+export async function requestClaimPayoutInDb(params: {
+  claimId: string;
+  amountDollars: number;
+  reason: string;
+  actor: DemoUser;
+}): Promise<ApprovalRequest> {
+  return runDbTransaction((state) => {
+    const claim = state.claims.find((c) => c.id === params.claimId);
+    if (!claim) {
+      throw new Error('Claim not found.');
+    }
+    if (claim.status === 'Settled' || claim.payoutStatus === 'Paid in Full') {
+      throw new Error(`Claim ${claim.claimNumber} is already settled.`);
+    }
+
+    const amountCents = dollarsToCents(params.amountDollars);
+    if (amountCents <= 0) {
+      throw new Error('Payout amount must be greater than zero.');
+    }
+
+    const reserveCents = dollarsToCents(claim.outstandingReserve);
+    if (amountCents > reserveCents) {
+      throw new Error(
+        `Payout amount ($${params.amountDollars.toLocaleString()}) cannot exceed outstanding case reserve ($${claim.outstandingReserve.toLocaleString()}).`
+      );
+    }
+
+    const existingPending = state.approvalRequests.find(
+      (a) =>
+        a.targetEntityId === claim.id &&
+        a.actionType === 'Claim Payout Release' &&
+        a.status === 'Pending'
+    );
+    if (existingPending) {
+      throw new Error(
+        `A payout approval request (${existingPending.referenceNumber}) is already pending for claim ${claim.claimNumber}.`
+      );
+    }
+
+    const reqSeq = 410 + state.approvalRequests.length;
+    const approvalRequest: ApprovalRequest = {
+      id: `apr-${reqSeq}`,
+      referenceNumber: `APR-2026-0${reqSeq}`,
+      actionType: 'Claim Payout Release',
+      targetEntityId: claim.id,
+      targetReference: claim.claimNumber,
+      customerName: claim.customerName,
+      amount: params.amountDollars,
+      reason: params.reason.trim(),
+      initiatorEmail: params.actor.email,
+      initiatorName: params.actor.name,
+      initiatorRole: params.actor.role,
+      createdAt: new Date().toISOString(),
+      status: 'Pending',
+    };
+
+    claim.status = 'Under Review';
+    claim.payoutStatus = 'Pending Approval';
+
+    state.approvalRequests.unshift(approvalRequest);
+
+    appendAuditLog(state, {
+      actor: params.actor,
+      action: 'CLAIM_PAYOUT_REQUESTED',
+      entityType: 'CLAIM',
+      entityId: claim.id,
+      metadata: {
+        approvalReference: approvalRequest.referenceNumber,
+        amount: params.amountDollars,
+        reason: params.reason,
+      },
+    });
+
+    return approvalRequest;
+  });
+}
+
+/**
+ * Processes a Finance Approver's decision (Approved or Rejected) on a queued financial request.
+ * For approved refunds, routes the disbursement through the payment provider (Stripe), verifies
+ * confirmation, updates payment tracking, and books the balanced settlement reversal journal entry.
+ *
+ * @param params - Approval decision parameters including requestId, decision, note, and actor.
+ * @returns The updated ApprovalRequest entity.
+ */
 export async function decideApprovalInDb(params: {
   requestId: string;
   decision: 'Approved' | 'Rejected';
   note: string;
   actor: DemoUser;
 }): Promise<ApprovalRequest> {
-  return runDbTransaction((state) => {
+  return runDbTransaction(async (state) => {
     const req = state.approvalRequests.find((r) => r.id === params.requestId);
     if (!req) {
       throw new Error('Approval request not found.');
+    }
+    if (req.status !== 'Pending') {
+      throw new Error(`Approval request ${req.referenceNumber} has already been decided (${req.status}).`);
     }
 
     const check = canUserDecideApproval(params.actor, req);
@@ -1585,12 +1878,11 @@ export async function decideApprovalInDb(params: {
       if (req.actionType === 'Claim Payout Release') {
         const claim = state.claims.find((c) => c.id === req.targetEntityId);
         if (claim) {
-          claim.payoutStatus = 'Paid in Full';
-          claim.status = 'Settled';
+          const remainingReserveCents = Math.max(0, dollarsToCents(claim.outstandingReserve) - amountCents);
           claim.paidAmount = centsToDollars(dollarsToCents(claim.paidAmount) + amountCents);
-          claim.outstandingReserve = centsToDollars(
-            Math.max(0, dollarsToCents(claim.outstandingReserve) - amountCents)
-          );
+          claim.outstandingReserve = centsToDollars(remainingReserveCents);
+          claim.payoutStatus = remainingReserveCents === 0 ? 'Paid in Full' : 'Partially Paid';
+          claim.status = remainingReserveCents === 0 ? 'Settled' : 'Open';
           postBalancedJournalEntryInState(state, {
             reference: claim.claimNumber,
             referenceType: 'CLAIM_RESERVE',
@@ -1616,26 +1908,161 @@ export async function decideApprovalInDb(params: {
         req.actionType === 'Payment Refund' ||
         req.actionType === 'Policy Cancellation Return Premium'
       ) {
+        const penaltyCents = req.shortRatePenaltyAmount
+          ? dollarsToCents(req.shortRatePenaltyAmount)
+          : 0;
+        const grossUnearnedCents = amountCents + penaltyCents;
+
+        // Locate an explicitly settled payment with sufficient remaining refundable amount
+        // Never select a Pending or Failed PaymentIntent
+        const targetPayment = state.payments.find((p) => {
+          if (p.status !== 'Succeeded') return false;
+          const paidCents = dollarsToCents(p.amount);
+          const alreadyRefundedCents = dollarsToCents(p.refundedAmount || 0);
+          const remainingCents = paidCents - alreadyRefundedCents;
+          if (remainingCents < amountCents) return false;
+
+          return (
+            p.id === req.targetEntityId ||
+            p.stripePaymentIntentId === req.targetEntityId ||
+            p.policyId === req.targetEntityId ||
+            p.policyNumber === req.targetReference
+          );
+        });
+
+        if (!targetPayment) {
+          throw new Error(
+            `No settled payment with sufficient refundable balance found for ${req.targetReference} to refund $${req.amount.toLocaleString()}.`
+          );
+        }
+
+        // Persist a recoverable refund operation in the audit trail before external provider dispatch
+        appendAuditLog(state, {
+          actor: params.actor,
+          action: 'REFUND_DISPATCH_INITIATED',
+          entityType: 'PAYMENT',
+          entityId: targetPayment.id,
+          metadata: {
+            requestId: req.id,
+            referenceNumber: req.referenceNumber,
+            amountCents,
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+          },
+        });
+
+        // Submit approved refund to payment provider (Stripe)
+        const stripeRefund = await createStripeRefund({
+          paymentIntentId: targetPayment.stripePaymentIntentId,
+          amountCents,
+          reason: req.reason || `Approved ${req.actionType} (${req.referenceNumber})`,
+          idempotencyKey: `apr_refund_${req.id}_${amountCents}`,
+        });
+
+        // Provider confirmation guard: do not record settlement when refund fails or remains unconfirmed
+        if (
+          !stripeRefund ||
+          (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending') ||
+          stripeRefund.error
+        ) {
+          appendAuditLog(state, {
+            actor: params.actor,
+            action: 'REFUND_DISPATCH_FAILED',
+            entityType: 'PAYMENT',
+            entityId: targetPayment.id,
+            metadata: {
+              requestId: req.id,
+              amountCents,
+              error: stripeRefund?.error || `Unconfirmed status: ${stripeRefund?.status}`,
+            },
+          });
+          throw new Error(
+            `Stripe refund failed or remains unconfirmed (status: ${stripeRefund?.status || 'unconfirmed'}${
+              stripeRefund?.error ? ` — ${stripeRefund.error}` : ''
+            }). Settlement journal not recorded.`
+          );
+        }
+
+        targetPayment.refundReason = req.reason;
+        const currentRefundedCents = dollarsToCents(targetPayment.refundedAmount || 0);
+        const nextRefundedCents = currentRefundedCents + amountCents;
+        targetPayment.refundedAmount = centsToDollars(nextRefundedCents);
+
+        // Set terminal status Refunded and populate refundedAt only after provider confirms completion
+        if (stripeRefund.status === 'succeeded' && nextRefundedCents >= dollarsToCents(targetPayment.amount)) {
+          targetPayment.status = 'Refunded';
+          targetPayment.refundedAt = new Date().toISOString();
+        }
+
+        // Register processed Stripe refund ID to deduplicate subsequent webhook deliveries
+        if (stripeRefund.refundId) {
+          state.webhookEvents.unshift({
+            id: `wh-appr-${Date.now()}`,
+            stripeEventId: stripeRefund.refundId,
+            eventType: 'charge.refunded',
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+            status: 'PROCESSED',
+            processedAt: new Date().toISOString(),
+            recordedAt: new Date().toISOString(),
+            summary: `Approved refund (${req.referenceNumber}) processed with Stripe refund ID ${stripeRefund.refundId}.`,
+          });
+          state.webhookEvents.unshift({
+            id: `wh-appr-evt-${Date.now()}`,
+            stripeEventId: `evt_refund_${stripeRefund.refundId.slice(-10)}`,
+            eventType: 'charge.refunded',
+            paymentIntentId: targetPayment.stripePaymentIntentId,
+            status: 'PROCESSED',
+            processedAt: new Date().toISOString(),
+            recordedAt: new Date().toISOString(),
+            summary: `Approved refund event token registered for ${req.referenceNumber}.`,
+          });
+        }
+
+        const lines: {
+          accountCode: string;
+          accountName: string;
+          debitCents: number;
+          creditCents: number;
+        }[] = [
+          {
+            accountCode: '2010',
+            accountName: 'Unearned Premium Reserve',
+            debitCents: grossUnearnedCents,
+            creditCents: 0,
+          },
+          {
+            accountCode: '1020',
+            accountName: 'Stripe Settlement Clearing',
+            debitCents: 0,
+            creditCents: amountCents,
+          },
+        ];
+
+        if (penaltyCents > 0) {
+          lines.push({
+            accountCode: '4020',
+            accountName: 'Retained Short-Rate Cancellation Penalty',
+            debitCents: 0,
+            creditCents: penaltyCents,
+          });
+        }
+
         postBalancedJournalEntryInState(state, {
           reference: req.targetReference,
           referenceType: 'REVERSAL',
-          description: `Approved return premium / refund settlement (${req.referenceNumber})`,
+          description: `Approved return premium / refund settlement (${req.referenceNumber})${
+            penaltyCents > 0 ? ` [Short-Rate Penalty: $${centsToDollars(penaltyCents).toLocaleString()}]` : ''
+          }`,
           actor: params.actor,
-          lines: [
-            {
-              accountCode: '2010',
-              accountName: 'Unearned Premium Reserve',
-              debitCents: amountCents,
-              creditCents: 0,
-            },
-            {
-              accountCode: '1020',
-              accountName: 'Stripe Settlement Clearing',
-              debitCents: 0,
-              creditCents: amountCents,
-            },
-          ],
+          lines,
         });
+      }
+    } else if (params.decision === 'Rejected') {
+      if (req.actionType === 'Claim Payout Release') {
+        const claim = state.claims.find((c) => c.id === req.targetEntityId);
+        if (claim && claim.payoutStatus === 'Pending Approval') {
+          claim.payoutStatus = claim.paidAmount > 0 ? 'Partially Paid' : 'Unpaid';
+          claim.status = 'Open';
+        }
       }
     }
 
@@ -1651,6 +2078,13 @@ export async function decideApprovalInDb(params: {
   });
 }
 
+/**
+ * Updates the investigation status and audit notes on a payment reconciliation break.
+ * If marked as Resolved via Adjustment, automatically posts the balancing subledger journal entry.
+ *
+ * @param params - Reconciliation update details including itemId, status, notes, and actor.
+ * @returns The updated ReconciliationItem entity.
+ */
 export async function updateReconciliationBreakInDb(params: {
   itemId: string;
   status: InvestigationStatus;

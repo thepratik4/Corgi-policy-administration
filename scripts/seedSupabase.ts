@@ -9,6 +9,9 @@ if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
   process.loadEnvFile(path.join(process.cwd(), '.env.local'));
 }
 
+/**
+ * Main seeding routine for populating initial ledger, policy, payment, and reconciliation state into Supabase.
+ */
 async function main() {
   console.log('Connecting to Supabase...');
   const supabase = getSupabaseClient();
@@ -18,6 +21,29 @@ async function main() {
   }
 
   const state = createInitialSeedState();
+
+  const isForce = process.argv.includes('--force') || process.argv.includes('-f');
+
+  // Check relational seed completion tracker when not forcing
+  if (!isForce) {
+    const { data: relationalCompletion, error: compCheckError } = await supabase
+      .from('corgi_system_state')
+      .select('key')
+      .eq('key', 'RELATIONAL_SEED_COMPLETED')
+      .maybeSingle();
+
+    if (compCheckError) {
+      console.error('Failed checking relational seed completion status:', compCheckError.message);
+      process.exit(1);
+    }
+
+    if (relationalCompletion) {
+      console.log(
+        'Database snapshot and relational data are already fully seeded. Run with --force to overwrite.'
+      );
+      process.exit(0);
+    }
+  }
 
   console.log(`Seeding baseline state into Supabase:
 - ${state.brokers.length} brokers
@@ -29,22 +55,51 @@ async function main() {
 - ${state.reconciliationItems.length} reconciliation items
   `);
 
-  // 1. Snapshot State Table
-  const { error: stateError } = await supabase
-    .from('corgi_system_state')
-    .upsert(
-      {
+  // 1. Snapshot State Table & Concurrency Guard
+  if (isForce) {
+    const { error: stateError } = await supabase
+      .from('corgi_system_state')
+      .upsert(
+        {
+          key: 'ACTIVE_SNAPSHOT',
+          state: state,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+
+    if (stateError) {
+      console.error('Failed to force-upsert ACTIVE_SNAPSHOT:', stateError.message);
+      process.exit(1);
+    }
+    console.log('Successfully force-saved snapshot to corgi_system_state.');
+  } else {
+    // Attempt atomic insert: if record exists, handle conflict without overwriting
+    const { error: insertError } = await supabase
+      .from('corgi_system_state')
+      .insert({
         key: 'ACTIVE_SNAPSHOT',
         state: state,
         updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' }
-    );
+      });
 
-  if (stateError) {
-    console.warn('Warning syncing corgi_system_state:', stateError.message);
-  } else {
-    console.log('Successfully saved snapshot to corgi_system_state.');
+    if (insertError) {
+      const isConflict =
+        insertError.code === '23505' ||
+        insertError.message.includes('duplicate key') ||
+        insertError.message.includes('conflict');
+
+      if (isConflict) {
+        console.log(
+          'ACTIVE_SNAPSHOT already exists; preserving snapshot and completing/resuming relational table seeding.'
+        );
+      } else {
+        console.error('Failed to insert ACTIVE_SNAPSHOT:', insertError.message);
+        process.exit(1);
+      }
+    } else {
+      console.log('Successfully inserted new ACTIVE_SNAPSHOT into corgi_system_state.');
+    }
   }
 
   // 2. Brokers
@@ -264,6 +319,48 @@ async function main() {
     .upsert(reconRows, { onConflict: 'id' });
   if (reconError) console.error('Error seeding reconciliation items:', reconError.message);
   else console.log(`Seeded ${reconRows.length} reconciliation items.`);
+
+  const seedFailures: string[] = [];
+  if (brokerError) seedFailures.push(`brokers: ${brokerError.message}`);
+  if (policyError) seedFailures.push(`policies: ${policyError.message}`);
+  if (paymentError) seedFailures.push(`payments: ${paymentError.message}`);
+  if (claimError) seedFailures.push(`claims: ${claimError.message}`);
+  if (journalError) seedFailures.push(`journal_entries: ${journalError.message}`);
+  if (linesError) seedFailures.push(`journal_lines: ${linesError.message}`);
+  if (apprError) seedFailures.push(`approval_requests: ${apprError.message}`);
+  if (reconError) seedFailures.push(`reconciliation_items: ${reconError.message}`);
+
+  if (seedFailures.length > 0) {
+    console.error('Relational seeding aborted due to table errors:\n' + seedFailures.join('\n'));
+    process.exit(1);
+  }
+
+  // 9. Relational Seed Completion Tracking
+  const { error: markerError } = await supabase.from('corgi_system_state').upsert(
+    {
+      key: 'RELATIONAL_SEED_COMPLETED',
+      state: {
+        completedAt: new Date().toISOString(),
+        tables: [
+          'brokers',
+          'policies',
+          'payments',
+          'claims',
+          'journal_entries',
+          'journal_lines',
+          'approval_requests',
+          'reconciliation_items',
+        ],
+      },
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'key' }
+  );
+
+  if (markerError) {
+    console.error('Failed to write RELATIONAL_SEED_COMPLETED marker:', markerError.message);
+    process.exit(1);
+  }
 
   console.log('\nSupabase cloud database seed complete! All tables and state snapshot populated.');
 }

@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
 
+/**
+ * Type guard verifying whether the provided key is a non-placeholder Stripe secret key.
+ *
+ * @param key - Candidate Stripe API secret key.
+ * @returns True if the key is formatted as a valid Stripe secret key.
+ */
 function isRealStripeSecretKey(key: string | undefined): key is string {
   return Boolean(
     key &&
@@ -9,6 +15,11 @@ function isRealStripeSecretKey(key: string | undefined): key is string {
   );
 }
 
+/**
+ * Resolves the active Stripe webhook signing secret, falling back to deterministic sandbox secret.
+ *
+ * @returns Stripe webhook signing secret string.
+ */
 function getWebhookSecret(): string {
   const envSecret = process.env.STRIPE_WEBHOOK_SECRET;
   if (envSecret && !envSecret.includes('your_stripe_webhook')) {
@@ -19,6 +30,11 @@ function getWebhookSecret(): string {
 
 let stripeClientSingleton: Stripe | null = null;
 
+/**
+ * Instantiates or retrieves the singleton Stripe client instance when configured with a valid key.
+ *
+ * @returns Initialized Stripe client, or null if unconfigured or running in sandbox simulation mode.
+ */
 export function getStripeClient(): Stripe | null {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!isRealStripeSecretKey(secretKey)) {
@@ -120,6 +136,9 @@ export async function createStripePaymentIntent(params: {
 
 /**
  * Issues a Stripe refund in integer USD cents against a settled PaymentIntent.
+ * In live mode (configured API key), calls the official Stripe Refunds API.
+ * In mock/sandbox mode (synthetic test PaymentIntents), returns a deterministic sandbox refund.
+ * If a live Stripe call fails, returns status: 'failed' with error details rather than masking as synthetic success.
  */
 export async function createStripeRefund(params: {
   paymentIntentId: string;
@@ -132,11 +151,17 @@ export async function createStripeRefund(params: {
   amountCents: number;
   status: string;
   isLiveStripeSdk: boolean;
+  error?: string;
 }> {
   const { paymentIntentId, amountCents, reason, idempotencyKey } = params;
   const stripe = getStripeClient();
 
-  if (stripe && paymentIntentId.startsWith('pi_')) {
+  const isSyntheticPaymentIntent =
+    paymentIntentId.startsWith('pi_3QTest') ||
+    paymentIntentId.startsWith('pi_refund_') ||
+    paymentIntentId.startsWith('pi_test_');
+
+  if (stripe && paymentIntentId.startsWith('pi_') && !isSyntheticPaymentIntent) {
     try {
       const refund = await stripe.refunds.create(
         {
@@ -154,8 +179,15 @@ export async function createStripeRefund(params: {
         status: refund.status || 'succeeded',
         isLiveStripeSdk: true,
       };
-    } catch {
-      // Fall back if the PaymentIntent was seeded in local sandbox
+    } catch (err) {
+      return {
+        refundId: '',
+        paymentIntentId,
+        amountCents,
+        status: 'failed',
+        isLiveStripeSdk: true,
+        error: err instanceof Error ? err.message : 'Stripe refund API call failed',
+      };
     }
   }
 

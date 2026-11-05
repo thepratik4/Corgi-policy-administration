@@ -6,6 +6,7 @@ import {
   decideApprovalInDb,
   fileClaimInDb,
   getDbState,
+  requestClaimPayoutInDb,
   updateBrokerKybInDb,
   updateReconciliationBreakInDb,
 } from '../../../lib/serverDatabase';
@@ -28,6 +29,12 @@ const OperationsActionSchema = z.discriminatedUnion('action', [
     action: z.literal('ADJUST_CLAIM_RESERVE'),
     claimId: z.string().min(1),
     newReserve: z.number().nonnegative(),
+    reason: z.string().min(2),
+  }),
+  z.object({
+    action: z.literal('REQUEST_CLAIM_PAYOUT'),
+    claimId: z.string().min(1),
+    amount: z.number().positive(),
     reason: z.string().min(2),
   }),
   z.object({
@@ -91,6 +98,16 @@ export async function POST(req: NextRequest) {
         actor: auth.user,
       });
       return NextResponse.json({ ...res, state: getDbState() });
+    }
+
+    if (data.action === 'REQUEST_CLAIM_PAYOUT') {
+      const approval = await requestClaimPayoutInDb({
+        claimId: data.claimId,
+        amountDollars: data.amount,
+        reason: data.reason,
+        actor: auth.user,
+      });
+      return NextResponse.json({ approval, state: getDbState() }, { status: 201 });
     }
 
     if (data.action === 'DECIDE_APPROVAL') {

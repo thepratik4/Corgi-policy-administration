@@ -78,6 +78,12 @@ interface AdjustReservePayload {
   reason: string;
 }
 
+interface RequestClaimPayoutPayload {
+  claimId: string;
+  amount: number;
+  reason: string;
+}
+
 interface InitiateStripePaymentPayload {
   policyId: string;
   amount: number;
@@ -124,7 +130,7 @@ interface PolicyAdminContextValue {
   issueNewPolicy: (payload: IssuePolicyPayload) => { success: boolean; policy?: Policy; error?: string };
   bindDraftOrPendingPolicy: (policyId: string) => void;
   createEndorsement: (payload: EndorsePolicyPayload) => void;
-  cancelPolicy: (policyId: string, reason: string) => void;
+  cancelPolicy: (policyId: string, reason: string, cancellationType?: 'PRO_RATA' | 'SHORT_RATE') => void;
   updateBrokerKybStatus: (brokerId: string, status: KybStatus) => void;
   initiateStripePayment: (payload: InitiateStripePaymentPayload) => Promise<{
     success: boolean;
@@ -140,6 +146,9 @@ interface PolicyAdminContextValue {
   refundPayment: (paymentId: string, reason: string) => void;
   openNewClaim: (payload: OpenClaimPayload) => { success: boolean; error?: string };
   adjustClaimReserve: (payload: AdjustReservePayload) => { success: boolean; error?: string };
+  requestClaimPayout: (
+    payload: RequestClaimPayoutPayload
+  ) => Promise<{ success: boolean; error?: string }>;
   reverseAndRebookTransaction: (transactionId: string, correctedAmount: number, reason: string) => void;
   updateReconciliationInvestigation: (itemId: string, status: InvestigationStatus, note: string) => void;
   decideApprovalRequest: (requestId: string, decision: 'Approved' | 'Rejected', decisionNote: string) => {
@@ -508,7 +517,7 @@ export function PolicyAdminProvider({
   );
 
   const cancelPolicy = useCallback(
-    (policyId: string, reason: string) => {
+    (policyId: string, reason: string, cancellationType: 'PRO_RATA' | 'SHORT_RATE' = 'PRO_RATA') => {
       const target = policies.find((p) => p.id === policyId);
       if (!target) return;
 
@@ -520,13 +529,13 @@ export function PolicyAdminProvider({
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ action: 'CANCEL', policyId, reason }),
+          body: JSON.stringify({ action: 'CANCEL', policyId, reason, cancellationType }),
         });
         if (res.ok) {
           const data = await res.json();
           applyServerState(data.state);
           addToast({
-            title: `Policy ${target.policyNumber} Cancelled`,
+            title: `Policy ${target.policyNumber} Cancelled (${cancellationType === 'SHORT_RATE' ? 'Short-Rate 90/10' : 'Pro-Rata'})`,
             description: `Status updated to Cancelled and unearned return premium routed to Approval Queue.`,
             variant: 'warning',
           });
@@ -814,6 +823,56 @@ export function PolicyAdminProvider({
     [claims, currentUser, addToast, ensureAuthSession, applyServerState]
   );
 
+  const requestClaimPayout = useCallback(
+    async (payload: RequestClaimPayoutPayload) => {
+      const claim = claims.find((c) => c.id === payload.claimId);
+      if (!claim) return { success: false, error: 'Claim not found.' };
+
+      if (payload.amount <= 0) {
+        return { success: false, error: 'Payout amount must be greater than zero.' };
+      }
+      if (payload.amount > claim.outstandingReserve) {
+        return {
+          success: false,
+          error: `Payout amount cannot exceed outstanding reserve of $${claim.outstandingReserve.toLocaleString()}.`,
+        };
+      }
+
+      try {
+        const token = tokenRef.current || (await ensureAuthSession(currentUser?.role || 'OPERATIONS_ADMIN'));
+        const res = await fetch('/api/operations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            action: 'REQUEST_CLAIM_PAYOUT',
+            claimId: payload.claimId,
+            amount: payload.amount,
+            reason: payload.reason,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          return { success: false, error: data.error || 'Failed to submit payout release request.' };
+        }
+
+        applyServerState(data.state);
+        addToast({
+          title: `Payout Release Requested (${data.approval?.referenceNumber || 'Queued'})`,
+          description: `Disbursement of $${payload.amount.toLocaleString()} queued to Approval Queue for Finance authorization.`,
+          variant: 'success',
+        });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: (err as Error).message || 'Network error' };
+      }
+    },
+    [claims, currentUser, addToast, ensureAuthSession, applyServerState]
+  );
+
   const reverseAndRebookTransaction = useCallback(
     (transactionId: string, correctedAmount: number, reason: string) => {
       const orig = ledgerTransactions.find((t) => t.id === transactionId);
@@ -974,6 +1033,7 @@ export function PolicyAdminProvider({
         refundPayment,
         openNewClaim,
         adjustClaimReserve,
+        requestClaimPayout,
         reverseAndRebookTransaction,
         updateReconciliationInvestigation,
         decideApprovalRequest,

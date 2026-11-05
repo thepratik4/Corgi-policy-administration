@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "clean": "next clean",
     "mcp": "tsx mcp-server.ts",
+    "seed:supabase": "tsx scripts/seedSupabase.ts",
     "test": "tsx --test \"utils/*.test.ts\""
   },
   "dependencies": {

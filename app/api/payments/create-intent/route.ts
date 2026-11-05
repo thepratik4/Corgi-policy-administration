@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateRequest } from '../../../../lib/serverAuth';
 import {
   getDbState,
+  hydrateStateFromSupabaseIfAvailable,
   recordPaymentIntentCreatedInDb,
 } from '../../../../lib/serverDatabase';
 import {
@@ -34,8 +35,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    await hydrateStateFromSupabaseIfAvailable();
     const db = getDbState();
-    const policy = db.policies.find((p) => p.id === parsed.data.policyId);
+    const policy = db.policies.find(
+      (p) => p.id === parsed.data.policyId || p.policyNumber === parsed.data.policyId
+    );
     if (!policy) {
       return NextResponse.json({ error: 'Target policy not found.' }, { status: 404 });
     }

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateRequest } from '../../../../lib/serverAuth';
 import {
   getDbState,
+  hydrateStateFromSupabaseIfAvailable,
   processVerifiedStripeWebhookInDb,
 } from '../../../../lib/serverDatabase';
 import { createStripeRefund } from '../../../../lib/stripeService';
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    await hydrateStateFromSupabaseIfAvailable();
     const db = getDbState();
     const payment = db.payments.find(
       (p) => p.id === parsed.data.paymentId || p.stripePaymentIntentId === parsed.data.paymentId
@@ -50,6 +52,16 @@ export async function POST(req: NextRequest) {
       reason: parsed.data.reason,
       idempotencyKey: `refund_${payment.stripePaymentIntentId}`,
     });
+
+    if (
+      stripeRefund.error ||
+      (stripeRefund.status !== 'succeeded' && stripeRefund.status !== 'pending')
+    ) {
+      return NextResponse.json(
+        { error: stripeRefund.error || `Stripe refund failed with status: ${stripeRefund.status}` },
+        { status: 422 }
+      );
+    }
 
     const webhookResult = await processVerifiedStripeWebhookInDb({
       stripeEventId: `evt_refund_${stripeRefund.refundId.slice(-10)}`,

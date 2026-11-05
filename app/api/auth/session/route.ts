@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { DEMO_USERS } from '../../../../mocks/seedData';
 import { authenticateRequest, signServerJwt } from '../../../../lib/serverAuth';
-import { getDbState } from '../../../../lib/serverDatabase';
+import {
+  getDbState,
+  hydrateStateFromSupabaseIfAvailable,
+} from '../../../../lib/serverDatabase';
 
 const SessionRequestSchema = z.object({
   role: z.enum(['OPERATIONS_ADMIN', 'FINANCE_APPROVER']).optional(),
@@ -34,6 +37,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    await hydrateStateFromSupabaseIfAvailable();
     const db = getDbState();
     const targetRole = parsed.data.role || 'OPERATIONS_ADMIN';
     const user =

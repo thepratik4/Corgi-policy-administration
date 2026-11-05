@@ -13,8 +13,12 @@ import {
   recordPaymentIntentCreatedInDb,
   processVerifiedStripeWebhookInDb,
   reverseAndRebookJournalInDb,
+  cancelPolicyInDb,
+  decideApprovalInDb,
+  requestClaimPayoutInDb,
 } from '../lib/serverDatabase';
 import { validateDoubleEntryBalance } from './financialRules';
+import { escapeHtml } from './reinsuranceSchedule';
 
 test('Server JWT signing, verification, and RBAC role enforcement', async () => {
   const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
@@ -204,4 +208,247 @@ test('Append-Only Ledger Reversal & Rebooking preserves original entry and posts
       }),
     /already been reversed/
   );
+});
+
+test('cancelPolicyInDb cancels policy and rejects re-cancellation of already cancelled policy', async () => {
+  const state = await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+  const activePolicy = state.policies.find((p) => p.status === 'Active');
+  assert.ok(activePolicy, 'Should have an active policy in seed data');
+
+  const cancelled = await cancelPolicyInDb({
+    policyId: activePolicy.id,
+    reason: 'Insured requested early cancellation of coverage',
+    cancellationType: 'SHORT_RATE',
+    actor: opsUser,
+  });
+
+  assert.equal(cancelled.status, 'Cancelled');
+  assert.equal(cancelled.cancellationType, 'SHORT_RATE');
+  assert.ok(cancelled.shortRatePenaltyAmount !== undefined && cancelled.shortRatePenaltyAmount > 0);
+
+  // Attempting to cancel the same policy again MUST fail and throw without modifying audit data
+  await assert.rejects(
+    async () =>
+      await cancelPolicyInDb({
+        policyId: activePolicy.id,
+        reason: 'Attempting duplicate cancellation',
+        cancellationType: 'PRO_RATA',
+        actor: opsUser,
+      }),
+    /already cancelled/
+  );
+});
+
+test('decideApprovalInDb: refund approval routes through Stripe provider and posts balanced settlement journal', async () => {
+  const state = await resetDatabaseToSeed();
+  const finUser = DEMO_USERS.FINANCE_APPROVER;
+  const refundReq = state.approvalRequests.find((r) => r.actionType === 'Payment Refund');
+  assert.ok(refundReq, 'Should have a pending Payment Refund approval request in seed');
+
+  const beforeTxnCount = state.ledgerTransactions.length;
+  const decided = await decideApprovalInDb({
+    requestId: refundReq.id,
+    decision: 'Approved',
+    note: 'Approved after verification of risk reduction equipment',
+    actor: finUser,
+  });
+
+  assert.equal(decided.status, 'Approved');
+  assert.equal(decided.decidedByEmail, finUser.email);
+
+  const updatedState = getDbState();
+  assert.equal(updatedState.ledgerTransactions.length, beforeTxnCount + 1);
+
+  const settlementTxn = updatedState.ledgerTransactions[0];
+  assert.equal(settlementTxn.referenceType, 'REVERSAL');
+  assert.equal(validateDoubleEntryBalance(settlementTxn.lines).isBalanced, true);
+
+  // Attempting to decide the same request again MUST fail
+  await assert.rejects(
+    async () =>
+      await decideApprovalInDb({
+        requestId: refundReq.id,
+        decision: 'Approved',
+        note: 'Duplicate approval attempt',
+        actor: finUser,
+      }),
+    /already been decided/
+  );
+
+  // Target payment was partially refunded ($3,200 of $64,000), so its status remains 'Succeeded'
+  const targetPayment = updatedState.payments.find((p) => p.id === 'pay-503');
+  assert.ok(targetPayment);
+  assert.equal(targetPayment.status, 'Succeeded');
+  assert.equal(targetPayment.refundedAmount, 3200);
+
+  // Attempting refund approval without a settled payment covering the amount MUST fail
+  const orphanReqId = 'apr-test-orphan';
+  updatedState.approvalRequests.unshift({
+    id: orphanReqId,
+    referenceNumber: 'APR-2026-999',
+    actionType: 'Payment Refund',
+    targetEntityId: 'pol-nonexistent',
+    targetReference: 'CRG-NONEXISTENT',
+    customerName: 'No Payment Corp',
+    amount: 10000,
+    reason: 'Refund for missing policy',
+    initiatorEmail: 'alex.rivera@corgi.insure',
+    initiatorName: 'Alex Rivera',
+    initiatorRole: 'OPERATIONS_ADMIN',
+    createdAt: new Date().toISOString(),
+    status: 'Pending',
+  });
+
+  await assert.rejects(
+    async () =>
+      await decideApprovalInDb({
+        requestId: orphanReqId,
+        decision: 'Approved',
+        note: 'Approval for payment with no settlement',
+        actor: finUser,
+      }),
+    /No settled payment with sufficient refundable balance/
+  );
+});
+
+test('escapeHtml in reinsuranceSchedule escapes HTML entities and tags', () => {
+  assert.equal(escapeHtml('<script>alert("xss")</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+  assert.equal(escapeHtml("O'Connor & Sons <LLC>"), 'O&#39;Connor &amp; Sons &lt;LLC&gt;');
+  assert.equal(escapeHtml(null), '');
+  assert.equal(escapeHtml(undefined), '');
+  assert.equal(escapeHtml(12345), '12345');
+});
+
+test('issuePolicyInDb and payment intent: policy is persisted and found by both id and policyNumber', async () => {
+  await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+
+  const result = await issuePolicyInDb({
+    customerName: 'Sierra Autonomous Inc. Ltd',
+    customerIndustry: 'Autonomous Systems & Robotics',
+    customerEin: '12-9840291',
+    customerAddress: '100 Innovation Way, Palo Alto, CA 94304',
+    brokerId: 'brk-01',
+    lineOfBusiness: 'Commercial General Liability',
+    writtenPremiumDollars: 45000,
+    aggregateCoverageLimitDollars: 2000000,
+    perOccurrenceLimitDollars: 1000000,
+    deductibleDollars: 5000,
+    effectiveDate: '2026-11-05',
+    expirationDate: '2027-11-05',
+    actor: opsUser,
+  });
+
+  assert.ok(result.policy);
+  assert.equal(result.policy.customerName, 'Sierra Autonomous Inc. Ltd');
+  assert.equal(result.policy.writtenPremium, 45000);
+
+  const state = getDbState();
+  const foundById = state.policies.find((p) => p.id === result.policy.id || p.policyNumber === result.policy.id);
+  assert.ok(foundById, 'Policy should be resolvable by id');
+  assert.equal(foundById.id, result.policy.id);
+
+  const foundByNumber = state.policies.find((p) => p.id === result.policy.policyNumber || p.policyNumber === result.policy.policyNumber);
+  assert.ok(foundByNumber, 'Policy should be resolvable by policyNumber');
+  assert.equal(foundByNumber.policyNumber, result.policy.policyNumber);
+
+  // Record a PaymentIntent against the newly issued policy
+  const payment = await recordPaymentIntentCreatedInDb({
+    policyId: result.policy.id,
+    amountCents: 4500000,
+    paymentMethod: 'Visa •••• 4242',
+    stripePaymentIntentId: 'pi_test_sierra_autonomous',
+    idempotencyKey: 'idem_sierra_test',
+    actor: opsUser,
+  });
+
+  assert.ok(payment);
+  assert.equal(payment.status, 'Pending');
+  assert.equal(payment.amount, 45000);
+  assert.equal(payment.policyNumber, result.policy.policyNumber);
+});
+
+test('requestClaimPayoutInDb and decideApprovalInDb: validates limits, queues dual-control request, and disburses cash on approval', async () => {
+  await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+  const finUser = DEMO_USERS.FINANCE_APPROVER;
+
+  const state = getDbState();
+  const targetClaim = state.claims.find((c) => c.status === 'Open' && c.outstandingReserve > 0);
+  assert.ok(targetClaim);
+
+  // Attempting payout exceeding outstanding reserve MUST fail
+  await assert.rejects(
+    async () =>
+      await requestClaimPayoutInDb({
+        claimId: targetClaim.id,
+        amountDollars: targetClaim.outstandingReserve + 5000,
+        reason: 'Over-reserve claim payout',
+        actor: opsUser,
+      }),
+    /cannot exceed outstanding case reserve/
+  );
+
+  // Valid payout request
+  const payoutAmt = Math.min(25000, targetClaim.outstandingReserve);
+  const approval = await requestClaimPayoutInDb({
+    claimId: targetClaim.id,
+    amountDollars: payoutAmt,
+    reason: `Indemnity disbursement invoice #INV-TEST for ${targetClaim.claimNumber}`,
+    actor: opsUser,
+  });
+
+  assert.ok(approval);
+  assert.equal(approval.actionType, 'Claim Payout Release');
+  assert.equal(approval.amount, payoutAmt);
+  assert.equal(approval.status, 'Pending');
+
+  // Verify claim updated to Under Review & Pending Approval
+  const claimAfterReq = getDbState().claims.find((c) => c.id === targetClaim.id);
+  assert.ok(claimAfterReq);
+  assert.equal(claimAfterReq.status, 'Under Review');
+  assert.equal(claimAfterReq.payoutStatus, 'Pending Approval');
+
+  // Second payout request on same claim MUST be rejected as duplicate pending
+  await assert.rejects(
+    async () =>
+      await requestClaimPayoutInDb({
+        claimId: targetClaim.id,
+        amountDollars: 1000,
+        reason: 'Second duplicate request',
+        actor: opsUser,
+      }),
+    /already pending/
+  );
+
+  // Approving through Finance Approver
+  const prevReserve = targetClaim.outstandingReserve;
+  const prevPaid = targetClaim.paidAmount;
+
+  await decideApprovalInDb({
+    requestId: approval.id,
+    decision: 'Approved',
+    note: 'Authorized after invoice verification',
+    actor: finUser,
+  });
+
+  const claimAfterApprove = getDbState().claims.find((c) => c.id === targetClaim.id);
+  assert.ok(claimAfterApprove);
+  assert.equal(claimAfterApprove.paidAmount, prevPaid + payoutAmt);
+  assert.equal(claimAfterApprove.outstandingReserve, prevReserve - payoutAmt);
+  if (prevReserve - payoutAmt === 0) {
+    assert.equal(claimAfterApprove.status, 'Settled');
+    assert.equal(claimAfterApprove.payoutStatus, 'Paid in Full');
+  } else {
+    assert.equal(claimAfterApprove.status, 'Open');
+    assert.equal(claimAfterApprove.payoutStatus, 'Partially Paid');
+  }
+
+  // Verify balanced disbursement journal posted
+  const latestTxn = getDbState().ledgerTransactions[0];
+  assert.ok(latestTxn);
+  assert.equal(latestTxn.reference, targetClaim.claimNumber);
+  const balCheck = validateDoubleEntryBalance(latestTxn.lines);
+  assert.equal(balCheck.isBalanced, true);
 });

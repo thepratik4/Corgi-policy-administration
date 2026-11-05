@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateRequest } from '../../../lib/serverAuth';
 import {
   getDbState,
+  hydrateStateFromSupabaseIfAvailable,
   postBalancedJournalEntryInState,
   reverseAndRebookJournalInDb,
   runDbTransaction,
@@ -48,6 +49,7 @@ const LedgerMutationSchema = z.discriminatedUnion('action', [
 ]);
 
 export async function GET() {
+  await hydrateStateFromSupabaseIfAvailable();
   const state = getDbState();
   return NextResponse.json({
     ledgerTransactions: state.ledgerTransactions,
@@ -73,7 +75,7 @@ export async function POST(req: NextRequest) {
     const data = parsed.data;
 
     if (data.action === 'POST_JOURNAL') {
-      const tx = runDbTransaction((state) =>
+      const tx = await runDbTransaction((state) =>
         postBalancedJournalEntryInState(state, {
           reference: data.reference,
           referenceType: data.referenceType,

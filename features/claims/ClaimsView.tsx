@@ -14,6 +14,8 @@ import {
   ArrowLeft,
   SlidersHorizontal,
   AlertCircle,
+  Send,
+  Clock,
 } from 'lucide-react';
 
 const CLAIM_FILTERS: ('All' | ClaimStatus)[] = [
@@ -34,6 +36,7 @@ export function ClaimsView() {
     navigateTo,
     openNewClaim,
     adjustClaimReserve,
+    requestClaimPayout,
   } = usePolicyAdmin();
 
   const [statusFilter, setStatusFilter] = useState<'All' | ClaimStatus>('All');
@@ -45,8 +48,9 @@ export function ClaimsView() {
   const activePolicies = policies.filter((p) => p.status === 'Active');
   const [policyId, setPolicyId] = useState(activePolicies[0]?.id || '');
   const [lossDate, setLossDate] = useState('2026-11-01');
-  const [claimedAmount, setClaimedAmount] = useState('85000');
-  const [initialReserve, setInitialReserve] = useState('85000');
+  const [claimedAmount, setClaimedAmount] = useState('15000');
+  const [initialReserve, setInitialReserve] = useState('15000');
+  const [isReserveCustomized, setIsReserveCustomized] = useState(false);
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState('');
 
@@ -54,6 +58,13 @@ export function ClaimsView() {
   const [newReserveVal, setNewReserveVal] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
   const [adjustError, setAdjustError] = useState('');
+
+  // Request Payout Form
+  const [payoutModalOpen, setPayoutModalOpen] = useState(false);
+  const [payoutAmount, setPayoutAmount] = useState('');
+  const [payoutReason, setPayoutReason] = useState('');
+  const [payoutError, setPayoutError] = useState('');
+  const [payoutSubmitting, setPayoutSubmitting] = useState(false);
 
   const selectedClaim = useMemo(
     () => claims.find((c) => c.id === selectedClaimId) || null,
@@ -111,6 +122,20 @@ export function ClaimsView() {
     setOpenClaimModal(false);
   };
 
+  const handleClaimedAmountChange = (val: string) => {
+    setClaimedAmount(val);
+    setFormError('');
+    if (!isReserveCustomized) {
+      setInitialReserve(val);
+    }
+  };
+
+  const handleInitialReserveChange = (val: string) => {
+    setInitialReserve(val);
+    setIsReserveCustomized(true);
+    setFormError('');
+  };
+
   const handleAdjustReserveSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedClaim) return;
@@ -130,6 +155,39 @@ export function ClaimsView() {
     setAdjustError('');
     setAdjustReason('');
     setAdjustModalOpen(false);
+  };
+
+  const handlePayoutSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClaim) return;
+    const amt = Number(payoutAmount);
+    if (!amt || amt <= 0) {
+      setPayoutError('Please enter a positive payout amount.');
+      return;
+    }
+    if (amt > selectedClaim.outstandingReserve) {
+      setPayoutError(
+        `Payout cannot exceed available case reserve of ${formatCurrency(selectedClaim.outstandingReserve)}.`
+      );
+      return;
+    }
+    if (!payoutReason.trim()) {
+      setPayoutError('Please enter an adjuster justification or invoice reference.');
+      return;
+    }
+    setPayoutSubmitting(true);
+    const res = await requestClaimPayout({
+      claimId: selectedClaim.id,
+      amount: amt,
+      reason: payoutReason.trim(),
+    });
+    setPayoutSubmitting(false);
+    if (!res.success) {
+      setPayoutError(res.error || 'Failed to submit payout release request.');
+      return;
+    }
+    setPayoutError('');
+    setPayoutModalOpen(false);
   };
 
   if (selectedClaim) {
@@ -180,7 +238,7 @@ export function ClaimsView() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
               <button
                 type="button"
                 onClick={() => {
@@ -193,6 +251,35 @@ export function ClaimsView() {
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Adjust Case Reserve</span>
               </button>
+
+              {selectedClaim.status !== 'Settled' && selectedClaim.payoutStatus !== 'Paid in Full' && (
+                selectedClaim.payoutStatus === 'Pending Approval' ? (
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('approvals')}
+                    className="px-3.5 py-2 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-300 hover:bg-amber-100 rounded-lg inline-flex items-center gap-1.5"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Payout Pending Dual-Control Approval</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPayoutAmount(String(selectedClaim.outstandingReserve));
+                      setPayoutReason(
+                        `Indemnity settlement payout release for ${selectedClaim.claimNumber} (${selectedClaim.customerName})`
+                      );
+                      setPayoutError('');
+                      setPayoutModalOpen(true);
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg inline-flex items-center gap-1.5"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Request Payout Release</span>
+                  </button>
+                )
+              )}
             </div>
           </div>
         </div>
@@ -381,6 +468,108 @@ export function ClaimsView() {
             </div>
           </form>
         </Modal>
+
+        {/* Request Claim Payout Release Modal */}
+        <Modal
+          isOpen={payoutModalOpen}
+          onClose={() => setPayoutModalOpen(false)}
+          title={`Request Claim Payout Release — ${selectedClaim.claimNumber}`}
+          subtitle="Queues a disbursement authorization to the Approval Queue under dual-control treasury governance."
+        >
+          <form onSubmit={handlePayoutSubmit} className="space-y-4">
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Claimant & Policy:</span>
+                <span className="font-semibold text-slate-900">
+                  {selectedClaim.customerName} ({selectedClaim.policyNumber})
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Available Case Reserve (Account 2100):</span>
+                <span className="font-mono font-bold text-amber-700">
+                  {formatCurrency(selectedClaim.outstandingReserve)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Prior Settled Indemnity:</span>
+                <span className="font-mono font-semibold text-slate-700">
+                  {formatCurrency(selectedClaim.paidAmount)}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="payout-amount" className="block text-xs font-medium text-slate-700 mb-1">
+                Disbursement Payout Amount ($)
+              </label>
+              <input
+                id="payout-amount"
+                type="number"
+                value={payoutAmount}
+                onChange={(e) => {
+                  setPayoutAmount(e.target.value);
+                  setPayoutError('');
+                }}
+                max={selectedClaim.outstandingReserve}
+                className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                required
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Maximum allowable release: {formatCurrency(selectedClaim.outstandingReserve)}
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="payout-reason" className="block text-xs font-medium text-slate-700 mb-1">
+                Adjuster Justification & Settlement Reference
+              </label>
+              <textarea
+                id="payout-reason"
+                rows={3}
+                value={payoutReason}
+                onChange={(e) => {
+                  setPayoutReason(e.target.value);
+                  setPayoutError('');
+                }}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                placeholder="e.g. Verified vendor forensic invoice #INV-4412 or agreed settlement release deed"
+                required
+              />
+            </div>
+
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 space-y-1">
+              <p className="font-semibold">Dual-Control Treasury Governance:</p>
+              <p>
+                Submitting queues this release to the <strong>Approval Queue</strong>. Cash is only disbursed from Operating Cash (1010) when a <strong>Finance Approver (Sarah Chen, CPA)</strong> reviews and authorizes it.
+              </p>
+            </div>
+
+            {payoutError && (
+              <div role="alert" className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2 text-xs text-red-700">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{payoutError}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setPayoutModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={payoutSubmitting}
+                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{payoutSubmitting ? 'Submitting...' : 'Submit to Approval Queue'}</span>
+              </button>
+            </div>
+          </form>
+        </Modal>
       </div>
     );
   }
@@ -395,6 +584,9 @@ export function ClaimsView() {
           <button
             type="button"
             onClick={() => {
+              setClaimedAmount('15000');
+              setInitialReserve('15000');
+              setIsReserveCustomized(false);
               setFormError('');
               setOpenClaimModal(true);
             }}
@@ -583,27 +775,41 @@ export function ClaimsView() {
                 id="clm-claimed-amt"
                 type="number"
                 value={claimedAmount}
-                onChange={(e) => {
-                  setClaimedAmount(e.target.value);
-                  setFormError('');
-                }}
+                onChange={(e) => handleClaimedAmountChange(e.target.value)}
                 className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
               />
             </div>
             <div>
-              <label htmlFor="clm-init-reserve" className="block text-xs font-medium text-slate-700 mb-1">
-                Initial Reserve ($)
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="clm-init-reserve" className="block text-xs font-medium text-slate-700">
+                  Initial Reserve ($)
+                </label>
+                {isReserveCustomized && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInitialReserve(claimedAmount);
+                      setIsReserveCustomized(false);
+                      setFormError('');
+                    }}
+                    className="text-[10px] text-[#EA580C] hover:underline"
+                  >
+                    Sync with Claimed
+                  </button>
+                )}
+              </div>
               <input
                 id="clm-init-reserve"
                 type="number"
                 value={initialReserve}
-                onChange={(e) => {
-                  setInitialReserve(e.target.value);
-                  setFormError('');
-                }}
+                onChange={(e) => handleInitialReserveChange(e.target.value)}
                 className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
               />
+              <p className="text-[10px] text-slate-500 mt-1">
+                {isReserveCustomized
+                  ? 'Customized reserve liability'
+                  : 'Auto-synced with claimed amount'}
+              </p>
             </div>
           </div>
 
