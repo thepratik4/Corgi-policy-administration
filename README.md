@@ -6,6 +6,7 @@
 
 ## 🔗 Live Deployment & Evaluator Access
 
+* **Video Walkthrough (5-Min Tour)**: [https://youtu.be/AogoqMSrbkA](https://youtu.be/AogoqMSrbkA)
 * **Live URL**: [https://corgi-policy-administration.vercel.app/](https://corgi-policy-administration.vercel.app/)
 * **Evaluator Credentials (Enforced Maker-Checker Roles)**:
   * **Operations Admin** (Maker): `alex.rivera@corgi.insure` · Password: `corgi-ops-sandbox-2026`
@@ -143,7 +144,7 @@ npm run seed:supabase
 
 ## Automated Verification & Test Suite
 
-The test suite runs 21 comprehensive unit and integration tests verifying all financial math, double-entry conservation, Stripe webhooks, limits, and approval workflows:
+The test suite runs 28 comprehensive unit and integration tests verifying all financial math, double-entry conservation, Stripe webhooks, limits, and approval workflows:
 
 ```bash
 # Run unit & integration tests
