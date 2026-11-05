@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     const data = parsed.data;
 
     if (data.action === 'UPDATE_BROKER_KYB') {
-      const broker = updateBrokerKybInDb({
+      const broker = await updateBrokerKybInDb({
         brokerId: data.brokerId,
         kybStatus: data.kybStatus,
         actor: auth.user,
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (data.action === 'FILE_CLAIM') {
-      const res = fileClaimInDb({
+      const res = await fileClaimInDb({
         policyId: data.policyId,
         lossDate: data.lossDate,
         description: data.description,
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (data.action === 'ADJUST_CLAIM_RESERVE') {
-      const res = adjustClaimReserveInDb({
+      const res = await adjustClaimReserveInDb({
         claimId: data.claimId,
         newReserveDollars: data.newReserve,
         reason: data.reason,
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
       if (!roleCheck.authorized) {
         return NextResponse.json({ error: roleCheck.error }, { status: 403 });
       }
-      const approval = decideApprovalInDb({
+      const approval = await decideApprovalInDb({
         requestId: data.requestId,
         decision: data.decision,
         note: data.note,
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ approval, state: getDbState() });
     }
 
-    const item = updateReconciliationBreakInDb({
+    const item = await updateReconciliationBreakInDb({
       itemId: data.itemId,
       status: data.status,
       notes: data.notes,

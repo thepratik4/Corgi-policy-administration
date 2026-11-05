@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     const paymentIntentId =
       evt.data.object.payment_intent || evt.data.object.id;
 
-    const result = processVerifiedStripeWebhookInDb({
+    const result = await processVerifiedStripeWebhookInDb({
       stripeEventId: evt.id,
       eventType: evt.type,
       paymentIntentId,

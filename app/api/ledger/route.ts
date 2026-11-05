@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const revResult = reverseAndRebookJournalInDb({
+    const revResult = await reverseAndRebookJournalInDb({
       journalIdOrNumber: data.journalIdOrNumber,
       reason: data.reason,
       actor: auth.user,

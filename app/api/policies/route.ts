@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = issuePolicyInDb({
+    const result = await issuePolicyInDb({
       customerName: parsed.data.customerName,
       customerIndustry: parsed.data.customerIndustry,
       customerEin: parsed.data.customerEin,
@@ -121,7 +121,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (parsed.data.action === 'BIND') {
-      const res = bindExistingPolicyInDb({
+      const res = await bindExistingPolicyInDb({
         policyId: parsed.data.policyId,
         actor: auth.user,
       });
@@ -133,7 +133,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (parsed.data.action === 'ENDORSE') {
-      const res = createEndorsementInDb({
+      const res = await createEndorsementInDb({
         policyId: parsed.data.policyId,
         effectiveDate: parsed.data.effectiveDate,
         description: parsed.data.description,
@@ -147,7 +147,7 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
-    const cancelled = cancelPolicyInDb({
+    const cancelled = await cancelPolicyInDb({
       policyId: parsed.data.policyId,
       reason: parsed.data.reason,
       actor: auth.user,

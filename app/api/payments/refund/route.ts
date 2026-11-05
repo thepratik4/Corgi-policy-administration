@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
       idempotencyKey: `refund_${payment.stripePaymentIntentId}`,
     });
 
-    const webhookResult = processVerifiedStripeWebhookInDb({
+    const webhookResult = await processVerifiedStripeWebhookInDb({
       stripeEventId: `evt_refund_${stripeRefund.refundId.slice(-10)}`,
       eventType: 'charge.refunded',
       paymentIntentId: payment.stripePaymentIntentId,

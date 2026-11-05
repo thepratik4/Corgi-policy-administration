@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDbState, resetDatabaseToSeed } from '../../../lib/serverDatabase';
+import {
+  getDbState,
+  hydrateStateFromSupabaseIfAvailable,
+  resetDatabaseToSeed,
+} from '../../../lib/serverDatabase';
 
 export async function GET() {
+  await hydrateStateFromSupabaseIfAvailable();
   const state = getDbState();
   return NextResponse.json({
     state,
@@ -11,9 +16,10 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    await hydrateStateFromSupabaseIfAvailable();
     const body = await req.json();
     if (body?.action === 'RESET_SEED') {
-      const state = resetDatabaseToSeed();
+      const state = await resetDatabaseToSeed();
       return NextResponse.json({
         reset: true,
         state,
