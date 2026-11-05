@@ -559,49 +559,112 @@ export function PoliciesView() {
           </div>
         )}
 
-        {detailTab === 'premium' && (
-          <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-2xl space-y-4">
-            <h2 className="text-base font-semibold text-slate-900 font-display">
-              Premium & Statutory Tax Breakdown
-            </h2>
-            <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg">
-              <div className="px-4 py-3 flex justify-between text-xs">
-                <span className="text-slate-600">Base Coverage Schedule Premium</span>
-                <span className="font-mono tabular-nums text-slate-900">
-                  {formatCurrency(
-                    selectedPolicy.coverages.reduce((s, c) => s + c.basePremium, 0)
+        {detailTab === 'premium' && (() => {
+          const totalInvoicedCents =
+            dollarsToCents(selectedPolicy.writtenPremium) + dollarsToCents(selectedPolicy.taxesAndFees);
+          const totalCollectedCents = dollarsToCents(selectedPolicy.collectedPremium);
+          const balanceDueCents = totalInvoicedCents - totalCollectedCents;
+          const balanceDueDollars = centsToDollars(balanceDueCents);
+          const overpaymentCreditDollars = centsToDollars(Math.max(0, totalCollectedCents - totalInvoicedCents));
+          const settledPaymentsCount = policyPayments.filter((p) => p.status === 'Succeeded').length;
+
+          return (
+            <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-2xl space-y-6">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900 font-display">
+                  Premium & Statutory Tax Breakdown
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Contractual written premium, surplus lines taxes, and billing reconciliation
+                </p>
+              </div>
+
+              <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg">
+                <div className="px-4 py-3 flex justify-between text-xs">
+                  <span className="text-slate-600">Base Coverage Schedule Premium</span>
+                  <span className="font-mono tabular-nums text-slate-900">
+                    {formatCurrency(
+                      selectedPolicy.coverages.reduce((s, c) => s + c.basePremium, 0)
+                    )}
+                  </span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-xs">
+                  <span className="text-slate-600">Net Mid-Term Endorsements</span>
+                  <span className="font-mono tabular-nums text-slate-900">
+                    {formatCurrency(
+                      selectedPolicy.endorsements.reduce((s, e) => s + e.premiumDelta, 0)
+                    )}
+                  </span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-xs font-semibold bg-slate-50">
+                  <span className="text-slate-900">Total Annual Written Premium</span>
+                  <span className="font-mono tabular-nums text-slate-900">
+                    {formatCurrency(selectedPolicy.writtenPremium)}
+                  </span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-xs">
+                  <span className="text-slate-600">State Surplus Lines Tax & Stamping Fee (3.5%)</span>
+                  <span className="font-mono tabular-nums text-slate-900">
+                    {formatCurrency(selectedPolicy.taxesAndFees)}
+                  </span>
+                </div>
+                <div className="px-4 py-3 flex justify-between text-xs font-bold bg-orange-50/50">
+                  <span className="text-slate-900">Total Policyholder Invoice Amount</span>
+                  <span className="font-mono tabular-nums text-[#EA580C]">
+                    {formatCurrency(selectedPolicy.writtenPremium + selectedPolicy.taxesAndFees)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Collections & Cash Clearing Reconciliation */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+                  <span className="text-xs font-semibold text-slate-900">
+                    Settlement & Cash Clearing Reconciliation
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {settledPaymentsCount} Succeeded Settlement(s)
+                  </span>
+                </div>
+                <div className="divide-y divide-slate-200">
+                  <div className="px-4 py-3 flex justify-between text-xs">
+                    <span className="text-slate-600">Total Cash Collected (Stripe Settled)</span>
+                    <span className="font-mono tabular-nums font-semibold text-emerald-700">
+                      {formatCurrency(selectedPolicy.collectedPremium)}
+                    </span>
+                  </div>
+                  {balanceDueCents < 0 ? (
+                    <div className="px-4 py-3 flex justify-between items-center text-xs bg-emerald-50 text-emerald-900 font-semibold">
+                      <div className="flex flex-col pr-4">
+                        <span>Customer Overpayment Credit Balance</span>
+                        <span className="text-[10px] font-normal text-emerald-700">
+                          Insured paid above invoice; credit balance held in Account 1100 (eligible for refund or next term endorsement)
+                        </span>
+                      </div>
+                      <span className="font-mono tabular-nums text-sm font-bold text-emerald-700 whitespace-nowrap">
+                        +{formatCurrency(overpaymentCreditDollars)} CR
+                      </span>
+                    </div>
+                  ) : balanceDueCents === 0 ? (
+                    <div className="px-4 py-3 flex justify-between text-xs bg-slate-50 text-slate-800 font-semibold">
+                      <span>Account Balance</span>
+                      <span className="font-mono tabular-nums text-slate-700 font-bold">
+                        $0.00 (Paid in Full)
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="px-4 py-3 flex justify-between text-xs bg-amber-50 text-amber-900 font-semibold">
+                      <span>Outstanding Invoice Balance Due</span>
+                      <span className="font-mono tabular-nums text-amber-700 font-bold">
+                        {formatCurrency(balanceDueDollars)}
+                      </span>
+                    </div>
                   )}
-                </span>
-              </div>
-              <div className="px-4 py-3 flex justify-between text-xs">
-                <span className="text-slate-600">Net Mid-Term Endorsements</span>
-                <span className="font-mono tabular-nums text-slate-900">
-                  {formatCurrency(
-                    selectedPolicy.endorsements.reduce((s, e) => s + e.premiumDelta, 0)
-                  )}
-                </span>
-              </div>
-              <div className="px-4 py-3 flex justify-between text-xs font-semibold bg-slate-50">
-                <span className="text-slate-900">Total Annual Written Premium</span>
-                <span className="font-mono tabular-nums text-slate-900">
-                  {formatCurrency(selectedPolicy.writtenPremium)}
-                </span>
-              </div>
-              <div className="px-4 py-3 flex justify-between text-xs">
-                <span className="text-slate-600">State Surplus Lines Tax & Stamping Fee (3.5%)</span>
-                <span className="font-mono tabular-nums text-slate-900">
-                  {formatCurrency(selectedPolicy.taxesAndFees)}
-                </span>
-              </div>
-              <div className="px-4 py-3 flex justify-between text-xs font-bold bg-orange-50/50">
-                <span className="text-slate-900">Total Policyholder Invoice Amount</span>
-                <span className="font-mono tabular-nums text-[#EA580C]">
-                  {formatCurrency(selectedPolicy.writtenPremium + selectedPolicy.taxesAndFees)}
-                </span>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {detailTab === 'endorsements' && (
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
