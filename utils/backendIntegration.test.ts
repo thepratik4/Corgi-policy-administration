@@ -13,6 +13,7 @@ import {
   recordPaymentIntentCreatedInDb,
   processVerifiedStripeWebhookInDb,
   reverseAndRebookJournalInDb,
+  cancelPolicyInDb,
 } from '../lib/serverDatabase';
 import { validateDoubleEntryBalance } from './financialRules';
 
@@ -203,5 +204,35 @@ test('Append-Only Ledger Reversal & Rebooking preserves original entry and posts
         actor: finUser,
       }),
     /already been reversed/
+  );
+});
+
+test('cancelPolicyInDb cancels policy and rejects re-cancellation of already cancelled policy', async () => {
+  const state = await resetDatabaseToSeed();
+  const opsUser = DEMO_USERS.OPERATIONS_ADMIN;
+  const activePolicy = state.policies.find((p) => p.status === 'Active');
+  assert.ok(activePolicy, 'Should have an active policy in seed data');
+
+  const cancelled = await cancelPolicyInDb({
+    policyId: activePolicy.id,
+    reason: 'Insured requested early cancellation of coverage',
+    cancellationType: 'SHORT_RATE',
+    actor: opsUser,
+  });
+
+  assert.equal(cancelled.status, 'Cancelled');
+  assert.equal(cancelled.cancellationType, 'SHORT_RATE');
+  assert.ok(cancelled.shortRatePenaltyAmount !== undefined && cancelled.shortRatePenaltyAmount > 0);
+
+  // Attempting to cancel the same policy again MUST fail and throw without modifying audit data
+  await assert.rejects(
+    async () =>
+      await cancelPolicyInDb({
+        policyId: activePolicy.id,
+        reason: 'Attempting duplicate cancellation',
+        cancellationType: 'PRO_RATA',
+        actor: opsUser,
+      }),
+    /already cancelled/
   );
 });

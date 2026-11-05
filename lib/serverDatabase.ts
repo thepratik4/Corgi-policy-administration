@@ -1348,6 +1348,9 @@ export async function cancelPolicyInDb(params: {
     if (!policy) {
       throw new Error('Policy not found.');
     }
+    if (policy.status === 'Cancelled') {
+      throw new Error(`Policy ${policy.policyNumber} is already cancelled.`);
+    }
     const unearnedCents = dollarsToCents(policy.unearnedPremium);
     const cancelIsoDate = new Date().toISOString().slice(0, 10);
     const cType = params.cancellationType || 'PRO_RATA';

@@ -134,12 +134,13 @@ export function PoliciesView() {
   const handleCancelSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPolicy) return;
-    if (!cancelReason.trim()) {
-      setCancelError('Please provide an audit justification before confirming cancellation.');
+    const trimmedReason = cancelReason.trim();
+    if (trimmedReason.length < 2) {
+      setCancelError('Please provide an audit justification (at least 2 characters) before confirming cancellation.');
       return;
     }
     setCancelError('');
-    cancelPolicy(selectedPolicy.id, cancelReason.trim(), cancelType);
+    cancelPolicy(selectedPolicy.id, trimmedReason, cancelType);
     setCancelConfirmOpen(false);
   };
 
@@ -749,14 +750,22 @@ export function PoliciesView() {
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
-                <h3 className="text-sm font-semibold text-slate-900 font-display">
-                  Subledger Double-Entry Cession Impact
-                </h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-900 font-display">
+                    Calculated Treaty Cession Schedule (Indicative)
+                  </h3>
+                  <span className="text-[10px] font-mono uppercase tracking-wider bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+                    Calculated · Not Posted Journal Entries
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Indicative subledger impact calculated per treaty terms. Formal journal entries post upon periodic treaty settlement.
+                </p>
                 <div className="divide-y divide-slate-100 text-xs">
                   <div className="py-2.5 flex justify-between items-center">
                     <div>
-                      <span className="font-mono text-slate-600 block">5030 · Ceded Reinsurance Premium Expense</span>
-                      <span className="text-[11px] text-slate-400">Expense (Debit)</span>
+                      <span className="font-mono text-slate-600 block">5030 · Ceded Reinsurance Premium Expense (Calculated)</span>
+                      <span className="text-[11px] text-slate-400">Calculated Expense (Debit) · Pending Settlement</span>
                     </div>
                     <span className="font-mono text-slate-900 font-bold tabular-nums">
                       {formatCurrency(cession.cededPremiumDollars)}
@@ -764,8 +773,8 @@ export function PoliciesView() {
                   </div>
                   <div className="py-2.5 flex justify-between items-center">
                     <div>
-                      <span className="font-mono text-slate-600 block">2050 · Ceded Reinsurance Premium Payable</span>
-                      <span className="text-[11px] text-slate-400">Liability (Credit)</span>
+                      <span className="font-mono text-slate-600 block">2050 · Ceded Reinsurance Premium Payable (Calculated)</span>
+                      <span className="text-[11px] text-slate-400">Calculated Liability (Credit) · Pending Settlement</span>
                     </div>
                     <span className="font-mono text-slate-900 font-bold tabular-nums">
                       {formatCurrency(cession.cededPremiumDollars)}
@@ -774,7 +783,7 @@ export function PoliciesView() {
                   <div className="py-2.5 flex justify-between items-center">
                     <div>
                       <span className="font-mono text-slate-600 block">1300 · Reinsurance Recoverable on Paid Losses</span>
-                      <span className="text-[11px] text-slate-400">Asset (Receivable on Claims)</span>
+                      <span className="text-[11px] text-slate-400">Calculated Asset (Receivable on Claims)</span>
                     </div>
                     <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
                       25% on Settled Losses
