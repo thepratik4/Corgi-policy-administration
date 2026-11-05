@@ -46,6 +46,7 @@ const PolicyMutationSchema = z.discriminatedUnion('action', [
     action: z.literal('CANCEL'),
     policyId: z.string().min(1),
     reason: z.string().min(2),
+    cancellationType: z.enum(['PRO_RATA', 'SHORT_RATE']).optional(),
   }),
 ]);
 
@@ -150,6 +151,7 @@ export async function PATCH(req: NextRequest) {
     const cancelled = await cancelPolicyInDb({
       policyId: parsed.data.policyId,
       reason: parsed.data.reason,
+      cancellationType: parsed.data.cancellationType,
       actor: auth.user,
     });
     return NextResponse.json({

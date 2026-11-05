@@ -111,3 +111,27 @@
   1. **Deterministic As-Of Slicing**: Given policy P and date T, the engine evaluates T against policy effective/expiration dates and all endorsement effective dates.
   2. Endorsements with effectiveDate > T are excluded from coverage limits and historical premium calculations, while endorsements with effectiveDate <= T are prorated up to T.
   3. Formatted declarations HTML prints directly to clean, high-fidelity PDF documents via native browser print pipelines or downloadable documents, displaying itemized coverages, limits, deductibles, state surplus lines taxes, stamping fees, and producer attribution.
+
+
+---
+
+### Entry 11 — T0 + 36h: Short-Rate vs. Pro-Rata Cancellation & Retained Penalty Accounting
+- **Context**: Domain Gauntlet #5 requires: *"Pro-rata versus short-rate refund — know the difference, implement one, and make the ledger capable of expressing the other. The refund is unearned premium, and it moves on the real rail."*
+- **Decision**: Added short-rate cancellation alongside standard pro-rata cancellation in `utils/financialRules.ts` (`calculateCancellationRefundCents`):
+  1. **Pro-Rata (Carrier/Standard)**: Customer receives 100% of remaining unearned premium refunded via the payment rail (`Debit 2010 Unearned Premium` vs `Credit 1020 Cash / Clearing`).
+  2. **Short-Rate (Insured-Requested Early Termination)**: Standard commercial 90/10 rule. Insured receives 90% of unearned premium as a refund, and Corgi retains a 10% short-rate cancellation penalty as earned fee revenue.
+  3. **Double-Entry Balance**:
+     - `Debit 2010 Unearned Premium Reserve`: Gross unearned amount (e.g. $1,000.00).
+     - `Credit 1020 Stripe Settlement Clearing`: 90% net refund to customer ($900.00).
+     - `Credit 4020 Retained Short-Rate Cancellation Penalty`: 10% earned revenue ($100.00).
+     - Sum(Debits) === Sum(Credits) strictly preserved to the cent.
+
+---
+
+### Entry 12 — T0 + 38h: Reinsurance Treaty Quota Share Cession Schedule & Cession Note
+- **Context**: Track 1 Stretch Ladder #6: *"A reinsurance cession note: who else is on the risk, and what the ledger owes them."*
+- **Decision**: Implemented commercial reinsurance quota-share facility modeling (`utils/reinsuranceSchedule.ts`):
+  1. **Treaty Model**: Active commercial treaty with Munich Re America (`TREATY-QS-2026-MRE`, Rating: A+ Superior · AM Best Size XV) with a 25% Quota Share cession and 75% Corgi net retention.
+  2. **Apportionment Schedule**: Calculates exact liability limit shares (Per-Occurrence: Corgi 75% / Munich Re 25%; Aggregate: Corgi 75% / Munich Re 25%) and written premium allocations.
+  3. **Subledger Cession Accounting**: Models `Debit 5030 Ceded Reinsurance Premium Expense` vs `Credit 2050 Ceded Reinsurance Premium Payable — Munich Re`, plus 25% reinsurance recoverable asset on settled claim losses.
+  4. **Document Generation**: One-click printable legal **Reinsurance Cession Note** (Schedule A) detailing treaty terms, signatory lines, NAIC group numbers, and the "Follow the Fortunes" binding clause.

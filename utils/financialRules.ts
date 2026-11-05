@@ -140,6 +140,40 @@ export function calculatePolicyInvoiceBreakdownCents(
 }
 
 /**
+ * Calculates cancellation unearned return premium and carrier retained penalty.
+ * - PRO_RATA (Standard/Carrier cancellation): 100% of unearned premium refunded to insured.
+ * - SHORT_RATE (Insured request cancellation): 90% refunded to insured, 10% penalty retained
+ *   by carrier as earned fee revenue in account 4020 Retained Short-Rate Penalty.
+ */
+export function calculateCancellationRefundCents(
+  unearnedPremiumCents: number,
+  cancellationType: 'PRO_RATA' | 'SHORT_RATE' = 'PRO_RATA'
+): {
+  grossUnearnedCents: number;
+  refundCents: number;
+  retainedPenaltyCents: number;
+  cancellationType: 'PRO_RATA' | 'SHORT_RATE';
+} {
+  const safeUnearned = Math.max(0, Math.round(unearnedPremiumCents));
+  if (cancellationType === 'SHORT_RATE') {
+    const retainedPenaltyCents = Math.round(safeUnearned * 0.10);
+    const refundCents = safeUnearned - retainedPenaltyCents;
+    return {
+      grossUnearnedCents: safeUnearned,
+      refundCents,
+      retainedPenaltyCents,
+      cancellationType: 'SHORT_RATE',
+    };
+  }
+  return {
+    grossUnearnedCents: safeUnearned,
+    refundCents: safeUnearned,
+    retainedPenaltyCents: 0,
+    cancellationType: 'PRO_RATA',
+  };
+}
+
+/**
  * Verifies whether a broker is eligible to bind/issue a commercial policy.
  * Unverified, Pending, or Failed KYB brokers are strictly blocked from binding policies.
  */

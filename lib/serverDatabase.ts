@@ -29,6 +29,7 @@ import {
 } from '../mocks/seedData';
 import {
   buildReversalJournalLines,
+  calculateCancellationRefundCents,
   calculatePolicyInvoiceBreakdownCents,
   canUserDecideApproval,
   centsToDollars,
@@ -1339,6 +1340,7 @@ export async function createEndorsementInDb(params: {
 export async function cancelPolicyInDb(params: {
   policyId: string;
   reason: string;
+  cancellationType?: 'PRO_RATA' | 'SHORT_RATE';
   actor: DemoUser;
 }): Promise<Policy> {
   return runDbTransaction((state) => {
@@ -1348,8 +1350,13 @@ export async function cancelPolicyInDb(params: {
     }
     const unearnedCents = dollarsToCents(policy.unearnedPremium);
     const cancelIsoDate = new Date().toISOString().slice(0, 10);
+    const cType = params.cancellationType || 'PRO_RATA';
+    const refundCalc = calculateCancellationRefundCents(unearnedCents, cType);
+
     policy.status = 'Cancelled';
     policy.cancellationDate = cancelIsoDate;
+    policy.cancellationType = cType;
+    policy.shortRatePenaltyAmount = centsToDollars(refundCalc.retainedPenaltyCents);
     policy.unearnedPremium = 0;
     policy.updatedAt = cancelIsoDate;
 
@@ -1362,8 +1369,12 @@ export async function cancelPolicyInDb(params: {
         targetEntityId: policy.id,
         targetReference: policy.policyNumber,
         customerName: policy.customerName,
-        amount: centsToDollars(unearnedCents),
-        reason: `Cancellation of ${policy.policyNumber}: ${params.reason}`,
+        amount: centsToDollars(refundCalc.refundCents),
+        cancellationType: cType,
+        shortRatePenaltyAmount: centsToDollars(refundCalc.retainedPenaltyCents),
+        reason: `${cType === 'SHORT_RATE' ? '[SHORT-RATE 90/10] ' : '[PRO-RATA] '}Cancellation of ${policy.policyNumber}: ${params.reason}${
+          cType === 'SHORT_RATE' ? ` (Retained Carrier Penalty: $${centsToDollars(refundCalc.retainedPenaltyCents).toLocaleString()})` : ''
+        }`,
         initiatorEmail: params.actor.email,
         initiatorName: params.actor.name,
         initiatorRole: params.actor.role,
@@ -1377,7 +1388,13 @@ export async function cancelPolicyInDb(params: {
       action: 'POLICY_CANCELLED',
       entityType: 'POLICY',
       entityId: policy.policyNumber,
-      metadata: { reason: params.reason, unearnedReturnCents: unearnedCents },
+      metadata: {
+        reason: params.reason,
+        cancellationType: cType,
+        grossUnearnedCents: refundCalc.grossUnearnedCents,
+        refundCents: refundCalc.refundCents,
+        retainedPenaltyCents: refundCalc.retainedPenaltyCents,
+      },
     });
 
     return policy;
@@ -1616,25 +1633,48 @@ export async function decideApprovalInDb(params: {
         req.actionType === 'Payment Refund' ||
         req.actionType === 'Policy Cancellation Return Premium'
       ) {
+        const penaltyCents = req.shortRatePenaltyAmount
+          ? dollarsToCents(req.shortRatePenaltyAmount)
+          : 0;
+        const grossUnearnedCents = amountCents + penaltyCents;
+
+        const lines: {
+          accountCode: string;
+          accountName: string;
+          debitCents: number;
+          creditCents: number;
+        }[] = [
+          {
+            accountCode: '2010',
+            accountName: 'Unearned Premium Reserve',
+            debitCents: grossUnearnedCents,
+            creditCents: 0,
+          },
+          {
+            accountCode: '1020',
+            accountName: 'Stripe Settlement Clearing',
+            debitCents: 0,
+            creditCents: amountCents,
+          },
+        ];
+
+        if (penaltyCents > 0) {
+          lines.push({
+            accountCode: '4020',
+            accountName: 'Retained Short-Rate Cancellation Penalty',
+            debitCents: 0,
+            creditCents: penaltyCents,
+          });
+        }
+
         postBalancedJournalEntryInState(state, {
           reference: req.targetReference,
           referenceType: 'REVERSAL',
-          description: `Approved return premium / refund settlement (${req.referenceNumber})`,
+          description: `Approved return premium / refund settlement (${req.referenceNumber})${
+            penaltyCents > 0 ? ` [Short-Rate Penalty: $${centsToDollars(penaltyCents).toLocaleString()}]` : ''
+          }`,
           actor: params.actor,
-          lines: [
-            {
-              accountCode: '2010',
-              accountName: 'Unearned Premium Reserve',
-              debitCents: amountCents,
-              creditCents: 0,
-            },
-            {
-              accountCode: '1020',
-              accountName: 'Stripe Settlement Clearing',
-              debitCents: 0,
-              creditCents: amountCents,
-            },
-          ],
+          lines,
         });
       }
     }

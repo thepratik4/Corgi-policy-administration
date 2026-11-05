@@ -8,6 +8,7 @@ import {
   calculatePolicyInvoiceBreakdownCents,
   validateBrokerBindingEligibility,
   buildReversalJournalLines,
+  calculateCancellationRefundCents,
   evaluateWebhookEventTransition,
   validateClaimAgainstCoverageLimit,
   canUserDecideApproval,
@@ -15,6 +16,7 @@ import {
   calculatePortfolioProgressBreakdown,
   formatDurationClock,
 } from './financialRules';
+import { calculatePolicyReinsuranceCession } from './reinsuranceSchedule';
 import { INITIAL_POLICIES } from '../mocks/seedData';
 
 test('dollarsToCents and validateIntegerCentsDoubleEntry enforce integer USD cent precision', () => {
@@ -230,4 +232,45 @@ test('calculatePortfolioProgressBreakdown computes normalized percentages and fo
 
   assert.equal(formatDurationClock(5048), '01:24:08');
   assert.equal(formatDurationClock(0), '00:00:00');
+});
+
+test('Domain Gauntlet #5: calculateCancellationRefundCents correctly models Pro-Rata vs Short-Rate 90/10 math', () => {
+  // 1. Pro-Rata (100% refund, 0 penalty)
+  const proRata = calculateCancellationRefundCents(500000, 'PRO_RATA'); // $5,000 unearned
+  assert.equal(proRata.grossUnearnedCents, 500000);
+  assert.equal(proRata.refundCents, 500000);
+  assert.equal(proRata.retainedPenaltyCents, 0);
+
+  // 2. Short-Rate (90% refund, 10% carrier penalty retained)
+  const shortRate = calculateCancellationRefundCents(500000, 'SHORT_RATE');
+  assert.equal(shortRate.grossUnearnedCents, 500000);
+  assert.equal(shortRate.refundCents, 450000); // $4,500
+  assert.equal(shortRate.retainedPenaltyCents, 50000); // $500 penalty
+  assert.equal(shortRate.refundCents + shortRate.retainedPenaltyCents, shortRate.grossUnearnedCents);
+});
+
+test('Track 1 Stretch Ladder #6: calculatePolicyReinsuranceCession computes 25% Quota Share split on premium and limits', () => {
+  const policy = INITIAL_POLICIES[0]; // e.g. $45,000 written premium, $2,000,000 agg limit, $1,000,000 occ limit
+  const cession = calculatePolicyReinsuranceCession(policy);
+
+  assert.equal(cession.treaty.treatyType, 'Quota Share');
+  assert.equal(cession.treaty.cessionRatePercent, 25);
+  assert.equal(cession.treaty.retentionRatePercent, 75);
+
+  // Premium split ties out to the penny
+  assert.equal(
+    cession.netRetainedPremiumDollars + cession.cededPremiumDollars,
+    cession.grossWrittenPremiumDollars
+  );
+  assert.equal(cession.cededPremiumDollars, Math.round(policy.writtenPremium * 0.25));
+
+  // Limit split ties out exactly
+  assert.equal(
+    cession.netRetainedLimitDollars + cession.cededLimitDollars,
+    cession.grossAggregateLimitDollars
+  );
+  assert.equal(
+    cession.netRetainedOccurrenceLimitDollars + cession.cededOccurrenceLimitDollars,
+    cession.grossOccurrenceLimitDollars
+  );
 });

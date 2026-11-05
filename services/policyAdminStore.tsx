@@ -124,7 +124,7 @@ interface PolicyAdminContextValue {
   issueNewPolicy: (payload: IssuePolicyPayload) => { success: boolean; policy?: Policy; error?: string };
   bindDraftOrPendingPolicy: (policyId: string) => void;
   createEndorsement: (payload: EndorsePolicyPayload) => void;
-  cancelPolicy: (policyId: string, reason: string) => void;
+  cancelPolicy: (policyId: string, reason: string, cancellationType?: 'PRO_RATA' | 'SHORT_RATE') => void;
   updateBrokerKybStatus: (brokerId: string, status: KybStatus) => void;
   initiateStripePayment: (payload: InitiateStripePaymentPayload) => Promise<{
     success: boolean;
@@ -508,7 +508,7 @@ export function PolicyAdminProvider({
   );
 
   const cancelPolicy = useCallback(
-    (policyId: string, reason: string) => {
+    (policyId: string, reason: string, cancellationType: 'PRO_RATA' | 'SHORT_RATE' = 'PRO_RATA') => {
       const target = policies.find((p) => p.id === policyId);
       if (!target) return;
 
@@ -520,13 +520,13 @@ export function PolicyAdminProvider({
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ action: 'CANCEL', policyId, reason }),
+          body: JSON.stringify({ action: 'CANCEL', policyId, reason, cancellationType }),
         });
         if (res.ok) {
           const data = await res.json();
           applyServerState(data.state);
           addToast({
-            title: `Policy ${target.policyNumber} Cancelled`,
+            title: `Policy ${target.policyNumber} Cancelled (${cancellationType === 'SHORT_RATE' ? 'Short-Rate 90/10' : 'Pro-Rata'})`,
             description: `Status updated to Cancelled and unearned return premium routed to Approval Queue.`,
             variant: 'warning',
           });

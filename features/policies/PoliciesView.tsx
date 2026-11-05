@@ -14,6 +14,15 @@ import {
   reconstructPolicyAsOfDate,
 } from '../../utils/documentGenerator';
 import {
+  calculateCancellationRefundCents,
+  centsToDollars,
+  dollarsToCents,
+} from '../../utils/financialRules';
+import {
+  calculatePolicyReinsuranceCession,
+  generateReinsuranceCessionNoteHtml,
+} from '../../utils/reinsuranceSchedule';
+import {
   Search,
   Plus,
   ArrowLeft,
@@ -40,6 +49,7 @@ type PolicyDetailTab =
   | 'coverage'
   | 'premium'
   | 'endorsements'
+  | 'reinsurance'
   | 'payments'
   | 'claims'
   | 'documents';
@@ -92,10 +102,45 @@ export function PoliciesView() {
   const [asOfDecModalOpen, setAsOfDecModalOpen] = useState(false);
   const [policyAsOfDate, setPolicyAsOfDate] = useState('2026-05-03');
 
+  // Cancellation Form State (Domain Gauntlet #5: Pro-Rata vs Short-Rate)
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelType, setCancelType] = useState<'PRO_RATA' | 'SHORT_RATE'>('PRO_RATA');
+  const [cancelError, setCancelError] = useState('');
+
   const selectedPolicy = useMemo(
     () => policies.find((p) => p.id === selectedPolicyId) || null,
     [policies, selectedPolicyId]
   );
+
+  // Reinsurance Treaty Cession (Track 1 Stretch Ladder #6)
+  const cession = useMemo(() => {
+    if (!selectedPolicy) return null;
+    return calculatePolicyReinsuranceCession(selectedPolicy);
+  }, [selectedPolicy]);
+
+  const handlePrintCessionNote = () => {
+    if (!selectedPolicy || !cession) return;
+    const broker = brokers.find((b) => b.id === selectedPolicy.brokerId) || null;
+    const html = generateReinsuranceCessionNoteHtml(selectedPolicy, broker);
+    printHtmlDocument(`Reinsurance_Cession_${selectedPolicy.policyNumber}`, html);
+    addToast({
+      title: 'Reinsurance Cession Note Generated',
+      description: `Treaty Schedule printed for ${selectedPolicy.policyNumber} (Munich Re Quota Share).`,
+      variant: 'success',
+    });
+  };
+
+  const handleCancelSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPolicy) return;
+    if (!cancelReason.trim()) {
+      setCancelError('Please provide an audit justification before confirming cancellation.');
+      return;
+    }
+    setCancelError('');
+    cancelPolicy(selectedPolicy.id, cancelReason.trim(), cancelType);
+    setCancelConfirmOpen(false);
+  };
 
   const policyAsOfRecon = useMemo(() => {
     if (!selectedPolicy || !policyAsOfDate) return null;
@@ -371,6 +416,7 @@ export function PoliciesView() {
               { id: 'coverage', label: `Coverage (${selectedPolicy.coverages.length})` },
               { id: 'premium', label: 'Premium Breakdown' },
               { id: 'endorsements', label: `Endorsements (${selectedPolicy.endorsements.length})` },
+              { id: 'reinsurance', label: 'Reinsurance Treaty (25% Ceded)' },
               { id: 'payments', label: `Payments (${policyPayments.length})` },
               { id: 'claims', label: `Claims (${policyClaims.length})` },
               { id: 'documents', label: `Documents (${policyDocs.length})` },
@@ -607,6 +653,133 @@ export function PoliciesView() {
           </div>
         )}
 
+        {detailTab === 'reinsurance' && cession && (
+          <div className="space-y-6">
+            {/* Header banner */}
+            <div className="bg-slate-900 text-white rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-orange-600 text-white rounded">
+                    Track 1 Stretch Ladder #6
+                  </span>
+                  <span className="text-xs text-slate-300 font-mono">
+                    Treaty Ref: {cession.treaty.treatyCode}
+                  </span>
+                </div>
+                <h2 className="text-lg font-bold font-display text-white mt-1">
+                  {cession.treaty.treatyName}
+                </h2>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Treaty Reinsurer: <span className="font-semibold text-white">{cession.treaty.reinsurerName}</span> ({cession.treaty.reinsurerRating})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handlePrintCessionNote}
+                className="px-4 py-2 text-xs font-semibold text-slate-900 bg-white hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 self-start sm:self-center shadow-xs"
+              >
+                <Printer className="w-3.5 h-3.5 text-[#EA580C]" />
+                <span>Print Reinsurance Cession Note</span>
+              </button>
+            </div>
+
+            {/* Split metrics */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4">
+                <p className="text-xs text-slate-500 font-medium">Underlying Written Premium</p>
+                <p className="text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                  {formatCurrency(cession.grossWrittenPremiumDollars)}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">100.0% Direct Commercial Policy</p>
+              </div>
+              <div className="bg-white border border-blue-200 bg-blue-50/30 rounded-xl p-4">
+                <p className="text-xs text-blue-700 font-medium">Corgi Net Retention ({cession.treaty.retentionRatePercent}%)</p>
+                <p className="text-2xl font-bold font-mono tabular-nums text-blue-900 mt-1">
+                  {formatCurrency(cession.netRetainedPremiumDollars)}
+                </p>
+                <p className="text-[11px] text-blue-700 mt-1">Retained Balance Sheet Exposure</p>
+              </div>
+              <div className="bg-white border border-orange-200 bg-orange-50/30 rounded-xl p-4">
+                <p className="text-xs text-orange-700 font-medium">Munich Re Ceded Share ({cession.treaty.cessionRatePercent}%)</p>
+                <p className="text-2xl font-bold font-mono tabular-nums text-[#EA580C] mt-1">
+                  {formatCurrency(cession.cededPremiumDollars)}
+                </p>
+                <p className="text-[11px] text-orange-700 mt-1">Payable under Account {cession.cededPayableAccountCode}</p>
+              </div>
+            </div>
+
+            {/* Limit apportionments and accounting schedule */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-slate-900 font-display">
+                  Liability Limit Apportionment Schedule
+                </h3>
+                <div className="divide-y divide-slate-100 text-xs">
+                  <div className="py-2 flex justify-between">
+                    <span className="text-slate-500">Per-Occurrence Policy Limit</span>
+                    <span className="font-mono text-slate-900 font-semibold">{formatCurrency(cession.grossOccurrenceLimitDollars)}</span>
+                  </div>
+                  <div className="py-2 flex justify-between pl-3 border-l-2 border-blue-500">
+                    <span className="text-blue-800">Corgi Retained Occurrence Exposure (75%)</span>
+                    <span className="font-mono text-blue-900 font-medium">{formatCurrency(cession.netRetainedOccurrenceLimitDollars)}</span>
+                  </div>
+                  <div className="py-2 flex justify-between pl-3 border-l-2 border-orange-500">
+                    <span className="text-orange-800">Munich Re Ceded Occurrence Limit (25%)</span>
+                    <span className="font-mono text-orange-900 font-medium">{formatCurrency(cession.cededOccurrenceLimitDollars)}</span>
+                  </div>
+                  <div className="py-2 flex justify-between">
+                    <span className="text-slate-500">Aggregate Policy Limit</span>
+                    <span className="font-mono text-slate-900 font-semibold">{formatCurrency(cession.grossAggregateLimitDollars)}</span>
+                  </div>
+                  <div className="py-2 flex justify-between pl-3 border-l-2 border-blue-500">
+                    <span className="text-blue-800">Corgi Retained Aggregate Exposure (75%)</span>
+                    <span className="font-mono text-blue-900 font-medium">{formatCurrency(cession.netRetainedLimitDollars)}</span>
+                  </div>
+                  <div className="py-2 flex justify-between pl-3 border-l-2 border-orange-500">
+                    <span className="text-orange-800">Munich Re Ceded Aggregate Limit (25%)</span>
+                    <span className="font-mono text-orange-900 font-medium">{formatCurrency(cession.cededLimitDollars)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-slate-900 font-display">
+                  Subledger Double-Entry Cession Impact
+                </h3>
+                <div className="divide-y divide-slate-100 text-xs">
+                  <div className="py-2.5 flex justify-between items-center">
+                    <div>
+                      <span className="font-mono text-slate-600 block">5030 · Ceded Reinsurance Premium Expense</span>
+                      <span className="text-[11px] text-slate-400">Expense (Debit)</span>
+                    </div>
+                    <span className="font-mono text-slate-900 font-bold tabular-nums">
+                      {formatCurrency(cession.cededPremiumDollars)}
+                    </span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center">
+                    <div>
+                      <span className="font-mono text-slate-600 block">2050 · Ceded Reinsurance Premium Payable</span>
+                      <span className="text-[11px] text-slate-400">Liability (Credit)</span>
+                    </div>
+                    <span className="font-mono text-slate-900 font-bold tabular-nums">
+                      {formatCurrency(cession.cededPremiumDollars)}
+                    </span>
+                  </div>
+                  <div className="py-2.5 flex justify-between items-center">
+                    <div>
+                      <span className="font-mono text-slate-600 block">1300 · Reinsurance Recoverable on Paid Losses</span>
+                      <span className="text-[11px] text-slate-400">Asset (Receivable on Claims)</span>
+                    </div>
+                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
+                      25% on Settled Losses
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {detailTab === 'payments' && (
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200">
@@ -820,22 +993,141 @@ export function PoliciesView() {
           </form>
         </Modal>
 
-        {/* Cancel Policy Confirmation Dialog */}
-        <ConfirmDialog
+        {/* Cancel Policy Modal (Domain Gauntlet #5: Pro-Rata vs Short-Rate) */}
+        <Modal
           isOpen={cancelConfirmOpen}
           onClose={() => setCancelConfirmOpen(false)}
-          onConfirm={(reason) => cancelPolicy(selectedPolicy.id, reason)}
           title={`Cancel Policy ${selectedPolicy.policyNumber}`}
-          description="Cancelling an active commercial policy terminates coverage and routes any unearned return premium to the Finance Approval Queue."
-          confirmLabel="Confirm Policy Cancellation"
-          variant="danger"
-          financialSummary={[
-            { label: 'Policy Number', value: selectedPolicy.policyNumber },
-            { label: 'Written Premium', value: formatCurrency(selectedPolicy.writtenPremium) },
-            { label: 'Earned to Date', value: formatCurrency(selectedPolicy.earnedPremium) },
-            { label: 'Unearned Return Premium', value: formatCurrency(selectedPolicy.unearnedPremium) },
-          ]}
-        />
+          subtitle="Domain Gauntlet #5: Pro-Rata vs. Short-Rate Cancellation with Double-Entry Accounting"
+          maxWidthClass="max-w-xl"
+        >
+          <form onSubmit={handleCancelSubmit} className="space-y-4 text-xs">
+            {/* Cancellation Type Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-900 block">
+                Cancellation Type & Proration Rule
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label
+                  className={`p-3.5 border rounded-xl cursor-pointer transition-all flex flex-col justify-between ${
+                    cancelType === 'PRO_RATA'
+                      ? 'border-[#EA580C] bg-orange-50/40 ring-1 ring-[#EA580C]'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="cancelType"
+                      checked={cancelType === 'PRO_RATA'}
+                      onChange={() => setCancelType('PRO_RATA')}
+                      className="text-[#EA580C] focus:ring-[#EA580C]"
+                    />
+                    <span className="font-semibold text-slate-900">Pro-Rata (Standard)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 pl-5">
+                    Carrier or mutual cancellation. Insured receives <strong>100%</strong> of unearned premium back.
+                  </p>
+                </label>
+
+                <label
+                  className={`p-3.5 border rounded-xl cursor-pointer transition-all flex flex-col justify-between ${
+                    cancelType === 'SHORT_RATE'
+                      ? 'border-[#EA580C] bg-orange-50/40 ring-1 ring-[#EA580C]'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="cancelType"
+                      checked={cancelType === 'SHORT_RATE'}
+                      onChange={() => setCancelType('SHORT_RATE')}
+                      className="text-[#EA580C] focus:ring-[#EA580C]"
+                    />
+                    <span className="font-semibold text-slate-900">Short-Rate (90/10)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 pl-5">
+                    Insured-requested early termination. Insured receives <strong>90%</strong> refund; Corgi retains <strong>10% penalty</strong>.
+                  </p>
+                </label>
+              </div>
+            </div>
+
+            {/* Financial Preview Box */}
+            {(() => {
+              const unearnedCents = dollarsToCents(selectedPolicy.unearnedPremium);
+              const preview = calculateCancellationRefundCents(unearnedCents, cancelType);
+              return (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Calculated Return Premium & Subledger Impact
+                  </span>
+                  <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                    <div className="bg-white p-2 rounded-lg border border-slate-200">
+                      <span className="text-[10px] text-slate-400 block">Gross Unearned</span>
+                      <span className="font-mono font-semibold text-slate-700">
+                        {formatCurrency(centsToDollars(preview.grossUnearnedCents))}
+                      </span>
+                    </div>
+                    <div className="bg-emerald-50 p-2 rounded-lg border border-emerald-200">
+                      <span className="text-[10px] text-emerald-700 font-medium block">Refund to Insured</span>
+                      <span className="font-mono font-bold text-emerald-800">
+                        {formatCurrency(centsToDollars(preview.refundCents))}
+                      </span>
+                    </div>
+                    <div className={`p-2 rounded-lg border ${preview.retainedPenaltyCents > 0 ? 'bg-orange-50 border-orange-200' : 'bg-white border-slate-200'}`}>
+                      <span className={`text-[10px] block ${preview.retainedPenaltyCents > 0 ? 'text-orange-700 font-medium' : 'text-slate-400'}`}>
+                        Corgi Retained Fee
+                      </span>
+                      <span className={`font-mono font-bold ${preview.retainedPenaltyCents > 0 ? 'text-[#EA580C]' : 'text-slate-500'}`}>
+                        {formatCurrency(centsToDollars(preview.retainedPenaltyCents))}
+                      </span>
+                    </div>
+                  </div>
+                  {cancelType === 'SHORT_RATE' && (
+                    <p className="text-[11px] text-orange-800 bg-orange-100/60 p-2 rounded-md">
+                      <strong>Double-Entry Rule</strong>: Debit 2010 Unearned Premium ({formatCurrency(centsToDollars(preview.grossUnearnedCents))}) = Credit 1020 Cash/Clearing ({formatCurrency(centsToDollars(preview.refundCents))}) + Credit 4020 Retained Penalty ({formatCurrency(centsToDollars(preview.retainedPenaltyCents))}).
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Audit Reason Textarea */}
+            <div>
+              <label htmlFor="cancel-reason" className="text-xs font-semibold text-slate-900 block mb-1">
+                Audit Trail Justification / Mandatory Reason
+              </label>
+              <textarea
+                id="cancel-reason"
+                rows={2}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g. Insured requested early cancellation due to sale of commercial facility..."
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
+              />
+              {cancelError && <p className="text-red-600 text-xs mt-1">{cancelError}</p>}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setCancelConfirmOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-2xs"
+              >
+                Confirm Cancellation & Route to Queue
+              </button>
+            </div>
+          </form>
+        </Modal>
 
         {/* As-Of Policy Declarations Page Modal (Domain Gauntlet #9) */}
         <Modal
